@@ -8,8 +8,12 @@ import unicodedata
 from enum import Enum
 from bs4 import BeautifulSoup
 from sql_interface import Chain, ChainWebAccess, Store, Item, SessionController
+import xml_parser
 
+# remove annoying logger prints from requests
 requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
+logging.getLogger("requests").setLevel(logging.WARNING)
+
 file_pattern = re.compile(
     r'.*(?P<type>Stores|Promo|Price(s)?)'
     r'(?P<full>Full)?'  # TODO only "Full" files?
@@ -105,6 +109,7 @@ def web_scraper_factory(name, url, username, password):
     # TODO add all other options
     else:
         return None
+
 class MissingFileException(Exception):
     pass
 
@@ -132,7 +137,7 @@ class GovDataScraper(object):
             tag = tag.parent
         table = tag
 
-        full_subchains_ids = self.db.session.query(Chain.full_id, Chain.subchain_id).all()
+        full_subchains_ids = self.db.query(Chain.full_id, Chain.subchain_id).all()
         for row in table.find('tbody').find_all('tr'):
             cells = row.find_all('td')
             if cells:
@@ -229,9 +234,8 @@ class ChainScraper(object):
         raise NotImplementedError
 
     def get_subchains_ids(self):
-        return [0]
-        # TODO!!!
-        raise NotImplementedError
+        xml = xml_parser.ChainXmlParser.get_parsed_file(self.get_stores_xml())
+        return xml_parser.ChainXmlParser.get_subchains_ids(xml)
 
     def get_chain_folder(self):
         """
@@ -286,7 +290,7 @@ class ChainScraper(object):
         return file_path
 
     @staticmethod
-    def set_pattern_date(pattern, date=None):
+    def set_pattern_date(pattern, date):
         """
         set the date for a given (file) pattern
         Args:
@@ -296,7 +300,6 @@ class ChainScraper(object):
         Returns:
             re.pattern: compiled pattern with the date groups set to match given date
         """
-        date = date or datetime.today()
         return re.compile(re.sub(
             re.escape(r'(?P<date>(?P<year>\d{4})(?P<month>\d{2})(?P<day>\d{2}))'),
             r'(?P<date>(?P<year>{:04})(?P<month>{:02})(?P<day>{:02}))'.format(date.year, date.month, date.day),
@@ -313,7 +316,10 @@ class ChainScraper(object):
 
     @staticmethod
     def get_stores_pattern(date=None):
-        return ChainScraper.set_pattern_date(stores_file_pattern, date)
+        if date:
+            return ChainScraper.set_pattern_date(stores_file_pattern, date)
+        else:
+            return stores_file_pattern
 
     def get_stores_xml(self, date=None):
         """
@@ -576,15 +582,15 @@ class ZolVebegadol(ChainScraper):
     def __init__(self):
         super().__init__(url='http://zolvebegadol.com/', chain_name='זול ובגדול')
 
+    def get_subchains_ids(self):
+        return [0]
+
     def get_chain_full_id(self):
         today_dir = self.get_today_timestamp()
         soup = bs_parse_url(self.url + today_dir + '/gz/')
         for a in soup.find_all('a'):
             if file_pattern.match(a.text):
                 return file_pattern.match(a.text).group('id')
-
-    def get_subchains_ids(self):
-        return [1]  # TODO
 
     def download_all_data(self, date=None):
         return self.download_files_by_pattern()

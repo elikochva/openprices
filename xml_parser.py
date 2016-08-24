@@ -5,10 +5,15 @@ import gzip
 import logging
 from datetime import datetime, timedelta
 import lxml.etree as ET
-from sql_interface import Chain, Item, Store, CurrentPrice, PriceHistory, Unit, SessionController
+from sql_interface import Chain, Item, Store, CurrentPrice, PriceHistory, Unit, SessionController, \
+    StoreType, StoreProduct
 
 import web_scraper
 float_re = re.compile(r'\d+\.*\d*')
+
+shufersal_full_id = 7290027600007 # needed for folder name workaround
+mega_full_id = 7290055700007
+zol_full_id = 7290058140886
 
 class ChainXmlParser(object):
     def __init__(self, db_chain, db=None, logger=None):
@@ -18,33 +23,92 @@ class ChainXmlParser(object):
         self.page_size = 100000
         self.chain = db_chain
 
-    def elm2str(self, element, tag):
+    @staticmethod
+    def elm2str(element, tag):
+        """
+        Convert xml element tag data to string
+
+        Args:
+            element: ET.element
+            tag: internal tag in the element
+
+        Returns:
+            str
+        """
         text = element.find(tag).text
         try:
             return text.strip()
         except AttributeError: # no text for the tag
             return ''
 
-    def elm2int(self, element, tag):
+    @staticmethod
+    def elm2int(element, tag):
+        """
+        Convert xml element tag data to int
+
+        Args:
+            element: ET.element
+            tag: internal tag in the element
+
+        Returns:
+            int
+        """
         text = element.find(tag).text
         try:
             return int(''.join([s for s in text if s.isdigit()]))
         except AttributeError: # no text for the tag
             return 0
 
-    def elm2float(self, element, tag):
+    @staticmethod
+    def elm2float(element, tag):
+        """
+        Convert xml element tag data to float
+
+        Args:
+            element: ET.element
+            tag: internal tag in the element
+
+        Returns:
+            float
+        """
         text = element.find(tag).text
         try:
             return float(float_re.match(text).group(0))
         except AttributeError: # no text for the tag
             return 0
+        except TypeError:
+            return 0
 
-    def elm2bool(self, element, tag):
-        text = element.find(tag).text
+    @staticmethod
+    def elm2bool(element, tag):
+        """
+        Convert xml element tag data to bool
+
+        Args:
+            element: ET.element
+            tag: internal tag in the element
+
+        Returns:
+            bool
+        """
         try:
-            return bool(text.strip())
-        except AttributeError:  # no text for the tag
-            return False
+            val = ChainXmlParser.elm2int(element, tag)
+            # assert val == 0 or val == 1 # TODO assuming 1 is the only TRUE value. when try to assume 0 is FALSE, getting some strange
+            return True if val == 1 else False
+        except AttributeError as e:  # no text for the tag
+            raise e  # TODO better handling
+
+    @staticmethod
+    def get_subchains_ids(xml):
+        """
+        return set of all subchain ids appearing in the file
+        Args:
+            xml: parsed xml object
+
+        Returns:
+            set(int):
+        """
+        return set([int(sub.text) for sub in xml.iter('subchainid')])
 
     def parse_stores(self):
         """
@@ -54,7 +118,7 @@ class ChainXmlParser(object):
         """
         chain = self.chain
         self.logger.info('Parsing {} stores'.format(chain))
-        stores_file = self.get_stores_file(chain)
+        stores_file = self.get_stores_file()
         xml = self.get_parsed_file(stores_file)
 
         # code for handling stupid naming convention. TODO: ask government to enforce fixed field names
@@ -64,18 +128,25 @@ class ChainXmlParser(object):
         else:
             store_elm_text = 'store'
 
+        chain_id = chain.id
+        subchains = self.get_subchains_ids(xml)
         stores = []
         for store_elm in xml.iter(store_elm_text):
-            try:
-                store_id = self.elm2int(store_elm, 'storeid')  # TODO have different
-                name = self.elm2str(store_elm, 'storename')
-                city = self.elm2str(store_elm, 'city')
-                address = self.elm2str(store_elm, 'address')
-                store = Store(store_id=store_id, chain_id=chain.id, name=name, city=city, address=address)
-                stores.append(store)
-            except Exception:
-                self.logger.exception()
+            store_id = self.elm2int(store_elm, 'storeid')
+            name = self.elm2str(store_elm, 'storename')
+            city = self.elm2str(store_elm, 'city')
+            address = self.elm2str(store_elm, 'address')
+            store_type = StoreType(self.elm2int(store_elm, 'storetype'))
 
+            if len(subchains) > 1:   # handling chains with multiple subchains in same file
+                subchain_id = self.elm2int(store_elm, 'subchainid')
+                if subchain_id != chain.subchain_id: continue
+                subchain_name = self.elm2str(store_elm, 'subchainname')
+                chain.name = subchain_name
+            store = Store(store_id=store_id, chain_id=chain_id, name=name, city=city, address=address, type=store_type)
+            stores.append(store)
+
+        # filter out existing stores # TODO update instead of filtering?
         existing_stores_ids = set(store.store_id for store in self.db.query(Store).filter(Store.chain_id == chain.id).all())
         new_stores = [store for store in stores if store.store_id not in existing_stores_ids]
         if new_stores:
@@ -83,12 +154,12 @@ class ChainXmlParser(object):
             self.db.bulk_insert(new_stores)
             self.db.commit()
 
-    def get_items_prices(self, prices_xml, gen_internal_item_code):
+    def get_items_prices(self, store, prices_xml):
         """
         Parse prices xml and return all items in it in a dictionary of Item: price
         Args:
+            store: db store
             prices_xml:
-            gen_internal_item_code: function to generate item code for internal items
 
         Returns:
 
@@ -97,20 +168,62 @@ class ChainXmlParser(object):
         if not [tag for tag in prices_xml.iter(item_elm_name)]: # TODO handling sudden change of file format!
             item_elm_name = 'product'
 
-        items_prices = {}
+        products_prices = {}
         for item_elm in prices_xml.iter(item_elm_name):
-            item_id = self.elm2int(item_elm, 'itemcode') # TODO zolBagadol has no item code for internal items
-            is_intrenal =
+            code = self.elm2int(item_elm, 'itemcode')
+            # TODO zolBagadol has no item code for internal items
+            # if self.chain.name == 'זול ובגדול':
+            #     is_internal = not self.elm2bool(item_elm, 'innerbarcode')  # TODO !!!
+            # else:
+            is_external = self.elm2bool(item_elm, 'itemtype') # 1 is global, 0 is internal
+            is_external &= len(str(code)) >= 13  # TODO: double check for internal item value & code because of stupid chains (zol)
             name = self.elm2str(item_elm, 'itemname')
-            quantity = float(self.elm2str(item_elm, 'quantity') or 0)  # TODO - all function: need to handle all input cases
-            unit_type = Unit.to_unit(self.elm2str(item_elm, 'unitqty'))
-            item = Item(id=item_id, name=name, quantity=quantity, unit_type=unit_type)
-            price = float(self.elm2str(item_elm, 'itemprice'))
-            # update_date = self.str2datetime(self.elm_text(item_elm, 'priceupdatedate'))  # TODO not a must use field
-            items_prices[item] = price  # now we have a list of all items and their current prices
-        return items_prices
+            quantity = self.elm2float(item_elm, 'quantity')
+            unit = self.elm2str(item_elm, 'unitqty')
+            # TODO add itemstatus?
+            item = StoreProduct(
+                code=code, store_id=store.id, external=is_external, name=name, quantity=quantity,
+                unit=unit
+            )
+            price = self.elm2float(item_elm, 'itemprice')
+            products_prices[item] = price
 
-    def parse_store_prices(self, chain, store, date=None):
+        self.logger.info('Parsed items: {}'.format(len(products_prices)))
+        return products_prices
+
+    @staticmethod
+    def set_products_item_id(db):
+        """
+        connect store products with items table. for global items only
+        need to be called after db was committed
+        """
+        # TODO logging
+        # TODO this unction assumes all global items are correctly marked as such in the files
+        # and that no internal item is marked as global (which is far fetched assumption... :(
+        page_size = 100000
+        product_groups = db.query(StoreProduct).filter(StoreProduct.external == True).\
+            filter(StoreProduct.item_id == None).group_by(StoreProduct.code).yield_per(page_size)
+
+        item_codes_ids = dict(db.query(Item.code, Item.id).yield_per(page_size))
+        for product_group in product_groups:
+            if isinstance(product_group, list):
+                print(list)
+                code = product_group[0].code
+                length = len(product_group)
+                item_id = item_codes_ids[code]
+                db.bulk_update(StoreProduct,
+                               dict(
+                                   zip(product_group, [item_id] * length)
+                                   )
+                               )
+            else:
+                code = product_group.code
+                item_id = item_codes_ids[code]
+                product_group.item_id = item_id
+
+        db.commit()
+
+    def parse_store_prices(self, store, date=None):
         """
         for a given Chain and Store, parse prices file from (date) and add the items to DB.
 
@@ -119,13 +232,12 @@ class ChainXmlParser(object):
             That is, calling for parsing file from older date, after a newer file was already parsed, may cause the DB
             to brake!!! (still working on it though)
         Args:
-            chain: DB Chain
             store: DB Store
         """
         date = date or datetime.today()
         self.logger.info('Parsing store: {} prices ({})'.format(store, date))
         try:
-            prices_xml = self.get_prices_file(chain, store, date)
+            prices_xml = self.get_prices_file(store, date)
         except BaseException:
             self.logger.exception("something want bad when trying to get prices for {}".format(store))
             return
@@ -134,74 +246,98 @@ class ChainXmlParser(object):
             self.logger.warn("Missing prices xml for {}!".format(store))
             return
 
-        chain_id = chain.id
+        chain_id = self.chain.id
         store_id = store.id
-        # TODO better cahin_item creation
-        chain_store_item_id = lambda x: int('{:03}{:013}'.format(chain_id, x)) # probably chain_id is enough...
 
-        items_prices = self.get_items_prices(prices_xml, chain_store_item_id)
-        self.logger.info('Parsed items: {}'.format(len(items_prices)))
-        # add new items to main items table
-        existing_items_ids = set(item.id for item in self.db.query(Item).yield_per(self.page_size))
-        parsed_items_ids = set(item.id for item in items_prices)
-        new_items = [item for item in items_prices if item.id not in existing_items_ids]
-        if new_items:
-            self.logger.info('adding new items to items table ({})'.format(len(new_items)))
+        parsed_products_prices = self.get_items_prices(store, prices_xml)
+
+        # 1) add new items to main items table
+        existing_items_codes = set(code for code, # this ',' is there for unpacking the results
+                                   in self.db.query(Item.code).yield_per(self.page_size))
+
+        # need to separate internal items from regular items
+
+        # TODO internal products not used right now since some manual manipulation needed here
+        global_products = set(product for product in parsed_products_prices if product.is_external())
+
+        new_global_items = set(item for item in global_products if item.code not in existing_items_codes)
+        if new_global_items:
+            new_items = [Item.from_store_product(product) for product in new_global_items] # generate new Items
+            self.logger.info('adding new global items to items table ({})'.format(len(new_items)))
             self.db.bulk_insert(new_items)
 
-        # update price history table
-        q = self.db.query(PriceHistory)
-        current_prices_conditions = [  # selecting all items from history table that are
-            # PriceHistory.chain_id == chain_id,  # this chain - redundent
-            PriceHistory.store_id == store_id,  # this store
-            # using the "==" check because the "is None" check evaluates to False every time
-            PriceHistory.end_date == None,       # have current value (no end_date)
-        ]
-        store_history_items = self.db.filter_and(q, current_prices_conditions).yield_per(self.page_size)
+        # 2) add new products to store_products table
+        exiting_store_products_codes = set(code for code,   # this ',' is there for unpacking the results
+            in self.db.query(StoreProduct.code).filter(StoreProduct.store_id == store_id).yield_per(self.page_size))
 
-        # all the item ids in history data
-        store_history_ids = set(item.item_id for item in store_history_items)
+        new_store_products = set(product for product in parsed_products_prices if product.code not in exiting_store_products_codes)
+        if new_store_products:
+            self.logger.info('adding new store products to store products table ({})'.format(len(new_store_products)))
+            # for i in new_store_products:
+                # self.db.add(i)
+            self.db.bulk_insert(new_store_products)
+        self.db.commit()
+
+
+        # 4) update price history table
+        db_products = set(self.db.query(StoreProduct).filter(StoreProduct.store_id == store_id).all())
+        # since __hash__ and __eq__ for StoreProduct are defined by (store_id, code) we can do this trick
+        parsed_products_prices = dict([(product, parsed_products_prices[product]) for product in db_products if product in parsed_products_prices])
+        parsed_ids = set(p.id for p in parsed_products_prices)
+
+        all_products = set(self.db.query(PriceHistory).join(StoreProduct)\
+            .filter(StoreProduct.store_id == store_id) \
+            .filter(PriceHistory.end_date == None).yield_per(self.page_size))
+        # is None test won't work here^
+        all_products_ids = set(p.store_product_id for p in all_products)
 
         # we have 3 different categories here
         # 1) items that don't have current price (new items, or that were out of store)
-        new_price_history_items = [
-            PriceHistory(item_id=item.id, chain_id=chain_id, store_id=store_id, price=items_prices[item])
-            for item in items_prices if item.id not in store_history_ids
+        new_products = [
+            PriceHistory(store_product_id=product.id, price=parsed_products_prices[product])
+            for product in parsed_products_prices if product.id not in all_products_ids
             ]
-        if new_price_history_items:
-            self.logger.info('Adding {} items with no current price'.format(len(new_price_history_items)))
-            self.db.bulk_insert(new_price_history_items)
+        if new_products:
+            self.logger.info('Adding {} items with no current price'.format(len(new_products)))
+            self.db.bulk_insert(new_products)
 
         # 2) items that were removed from store today - need to update end_date
         # (appear in db as having current price (have end_date == None), but not appearing in today file)
-        removed_from_store = [item for item in store_history_items if item.item_id not in parsed_items_ids]
-        # update end_date to yesterday # TODO (or for today?)
+        removed_from_store = [product for product in all_products if product.store_product_id not in parsed_ids]  # TODO change to set methods
         if removed_from_store:
             self.logger.info('Updating end_date to yesterday for all items that are out of store ({})'.
                              format(len(removed_from_store)))
             for item in removed_from_store:
+                # update end_date to yesterday # TODO (or for today?)
                 item.end_date = date - timedelta(days=1)
 
         # 3) items that need to update their current price:
-        # all items with end_date == None, and also appear in parsed_items are possible candidates for this.
+        # all items with end_date == None and also appear in db_products_prices  are possible candidates for this.
         #   a) need to find all items that have new prices
-        history_ids_prices = set((item.item_id, item.price) for item in store_history_items) # set() for faster check - using set TODO: benchmark
-        updated_parsed_items = [item for item in items_prices if (item.id, items_prices[item]) not in history_ids_prices] # this is the *new* items (of type Item)
+        update_candidate_ids = set(p.store_product_id for p in all_products if p.store_product_id in parsed_ids)
+        ids_prices = dict((p.store_product_id, p.price) for p in all_products if p.store_product_id in update_candidate_ids)
+        updated_parsed_products = [product for product in parsed_products_prices if
+                                   product.id in update_candidate_ids and
+                                   abs(float(ids_prices[product.id]) - parsed_products_prices[product]) > 0.01 # TODO better type safety for this check
+                                   ]
 
-        #   b) need to update old entry to have yesterday(?) [assuming code is running every day] as last date to price
-        updated_items_ids = set(item.id for item in updated_parsed_items) # this is the *history* items (type HistoryPrice)
-        history_updated_items = [item for item in store_history_items if item.item_id in updated_items_ids]
-        if history_updated_items:
-            self.logger.info('Updating end_date to yesterday for all items that have new price ({})'.
-                             format(len(updated_parsed_items)))
-            for item in history_updated_items:
-                item.end_date = date - timedelta(days=1)
+        updated_products_ids = set(p.id for p in updated_parsed_products)
 
-        new_prices = [PriceHistory(item_id=item.id, chain_id=chain_id, store_id=store_id, price=items_prices[item])
-                      for item in updated_parsed_items]
+        new_prices = [PriceHistory(store_product_id=product.id, price=parsed_products_prices[product])
+                      for product in updated_parsed_products]
+
         if new_prices:
             self.logger.info('Inserting new entries for all items with new price ({})'.format(len(new_prices)))
             self.db.bulk_insert(new_prices)
+
+        #   b) need to update old entry to have yesterday(?) [assuming code is running every day] as last date for previous price
+        history_updated_products = [product for product in all_products if product.store_product_id in updated_products_ids]
+        if history_updated_products:
+            self.logger.info('Updating end_date to yesterday for all items that have new price ({})'.
+                             format(len(history_updated_products)))
+            for item in history_updated_products:
+                item.end_date = date - timedelta(days=1)
+        self.db.commit()
 
         # TODO: need to update the current prices table (db or python???)
         # need to:
@@ -213,34 +349,28 @@ class ChainXmlParser(object):
         # remove all current items
 
         # get all items for this store
-        q = self.db.query(CurrentPrice)
-        current_prices_conditions = [  # selecting all items from current table that are
-            CurrentPrice.chain_id == chain_id,  # this chain
-            CurrentPrice.store_id == store_id,  # this store
-        ]
-        current_items = self.db.filter_and(q, current_prices_conditions).yield_per(self.page_size)
-        self.logger.info('Deleting all items for {}: {} from current items table'.format(chain, store))
-        current_items.delete()
+        self.logger.warn('updating current price table is working currently :(((((((')
+        return
+        current_products = self.db.query(CurrentPrice).join(StoreProduct).filter(StoreProduct.store_id == store_id).yield_per(self.page_size)
+        ids = set(p.id for p in current_products)
+        q = self.db.query(CurrentPrice).order_by()
+        current_products = self.db.filter_in(q, CurrentPrice.id, ids).yield_per(self.page_size)
+        self.logger.info('Deleting all items for {} from current items table'.format(store))
+        current_products.delete(synchronize_session=False).limit(1000)
 
         # Must have commit before next step
         self.db.commit()
-        # get all updated items from history table and insert them
-        q = self.db.query(PriceHistory)
-        current_prices_conditions = [  # selecting all items from history table that are
-            PriceHistory.chain_id == chain_id,  # this chain
-            PriceHistory.store_id == store_id,  # this store
-            PriceHistory.end_date == None  # have current value (no end_date)
-        ]
-        current_items = self.db.filter_and(q, current_prices_conditions).yield_per(self.page_size)
-        current_items = [
-            CurrentPrice(item_id=item.item_id, chain_id=chain_id, store_id=store_id, price=item.price)
-            for item in current_items
-            ]
-        self.logger.info('Inserting all current items({})'.format(len(current_items)))
-        self.db.bulk_insert(current_items)
+
+        current_products = [
+            CurrentPrice(store_product_id=product.id, price=parsed_products_prices [product])
+            for product in parsed_products_prices]
+
+        self.logger.info('Inserting all current items({})'.format(len(current_products)))
+        self.db.bulk_insert(current_products)
         self.db.commit()
 
-    def get_parsed_file(self, file_path):
+    @staticmethod
+    def get_parsed_file(file_path):
         """
         get a parsed xml object from a given file path
         the file can be either compressed gz file or not
@@ -251,22 +381,31 @@ class ChainXmlParser(object):
         Returns:
 
         """
-        if self.is_gz(file_path):
-            xml = self.get_xml_from_gz(file_path)
-        elif self.is_zip(file_path):
+        if ChainXmlParser.is_gz(file_path):
+            xml = ChainXmlParser.get_xml_from_gz(file_path)
+        elif ChainXmlParser.is_zip(file_path):
             f = zipfile.ZipFile(file_path, 'r')
             for name in f.namelist():
                 if web_scraper.file_pattern.match(name):
                     xml = f.open(name).read()
-        elif self.is_xml(file_path):
-            with open(file_path, encoding="utf16") as f:
-                xml = f.read()
-        else:
-            self.logger.error('unrecognized file type: {}'.format(file_path))
-            return
-        return self.parse_xml_object(xml)
+        elif ChainXmlParser.is_xml(file_path):
+            try:
+                with open(file_path, encoding="utf16") as f:
+                    xml = f.read()
+            except UnicodeDecodeError:
+                with open(file_path, encoding="utf8") as f:
+                    xml = f.read()
+        return ChainXmlParser.parse_xml_object(xml)
 
-    def get_stores_file(self, chain, date=None):
+    def get_folder(self):     # TODO: remove workaround by fixing web scraper folder names to be taken from DB
+        folder = self.chain.name
+        if self.chain.full_id == shufersal_full_id:
+            folder = 'שופרסל'
+        if self.chain.full_id == mega_full_id:
+            folder = 'מגה'
+        return folder
+
+    def get_stores_file(self, date=None):
         """
         Get the stores.xml file of the given chain
         Args:
@@ -275,25 +414,26 @@ class ChainXmlParser(object):
         Returns:
             str: path to xml file
         """
-        stores_file = self.get_file_path(parent_folder=chain.name, pattern=web_scraper.ChainScraper.get_stores_pattern(date))
+        stores_file = self.get_file_path(parent_folder=self.get_folder(), pattern=web_scraper.ChainScraper.get_stores_pattern(date))
         if stores_file is None:
-            self.logger.info("couldn't find Stores file for chain: {}, date {}".format(chain, date))
+            self.logger.info("couldn't find Stores file for chain: {}, date {}".format(self.chain, date))
             self.logger.info("Trying to download it...")
-            chain_scraper = web_scraper.web_scraper_factory(chain.name, chain.url, chain.username, chain.password)
+            chain_scraper = web_scraper.db_chain_factory(self.chain)
             stores_file = chain_scraper.get_stores_xml(date)
         return stores_file
 
-    def get_prices_file(self, chain, store, date=None):
-        pattern = web_scraper.ChainScraper.get_prices_pattern(store.store_id, date) # TODO
-        prices_file = self.get_file_path(parent_folder=chain.name, pattern=pattern)
+    def get_prices_file(self, store, date=None):
+        pattern = web_scraper.ChainScraper.get_prices_pattern(store.store_id, date)
+        prices_file = self.get_file_path(self.get_folder(), pattern)
         if prices_file is None:
-            self.logger.info("couldn't find Prices file for chain: {}".format(chain))
+            self.logger.info("couldn't find Prices file for store: {}".format(store))
             self.logger.info("Trying to download it...")
-            chain_scraper = web_scraper.web_scraper_factory(chain.name, chain.url, chain.username, chain.password)
+            chain_scraper = web_scraper.db_chain_factory(self.chain)
             prices_file = chain_scraper.get_prices_xml(store.store_id, pattern, date)
         return self.get_parsed_file(prices_file)
 
-    def get_file_path(self, parent_folder, pattern):
+    @staticmethod
+    def get_file_path(parent_folder, pattern):
         """
         find file path
         Args:
@@ -307,17 +447,20 @@ class ChainXmlParser(object):
             for f in filenames:
                 if pattern.match(f):
                     return os.path.join(dirpath, f)
+    @staticmethod
+    def is_gz(file_path):
+        return ChainXmlParser.is_file_type(file_path, 'gz')
 
-    def is_gz(self, file_path):
-        return self.is_file_type(file_path, 'gz')
+    @staticmethod
+    def is_zip(file_path):
+        return ChainXmlParser.is_file_type(file_path, 'zip')
 
-    def is_zip(self, file_path):
-        return self.is_file_type(file_path, 'zip')
+    @staticmethod
+    def is_xml(file_path):
+        return ChainXmlParser.is_file_type(file_path, 'xml')
 
-    def is_xml(self, file_path):
-        return self.is_file_type(file_path, 'xml')
-
-    def is_file_type(self, file_path, ext):
+    @staticmethod
+    def is_file_type(file_path, ext):
         """
         Check if given file has the given file type extension
 
@@ -330,7 +473,8 @@ class ChainXmlParser(object):
         """
         return file_path.lower().split('.')[-1] == ext
 
-    def get_xml_from_gz(self, file_path):
+    @staticmethod
+    def get_xml_from_gz(file_path):
         """
         Get xml file (as str) from gz file
 
@@ -345,7 +489,8 @@ class ChainXmlParser(object):
         xml_file = decompressed.read()
         return xml_file
 
-    def parse_xml_object(self, xmlobj):
+    @staticmethod
+    def parse_xml_object(xmlobj):
         """
         Parse given xml file str and return the xml's ElementTree
 

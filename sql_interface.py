@@ -1,17 +1,39 @@
 import logging
 from enum import Enum
-from sqlalchemy import create_engine, or_, and_, not_
+from datetime import datetime
+
+from sqlalchemy import create_engine, or_, and_, not_, MetaData
 from sqlalchemy.ext.declarative import declarative_base, declared_attr
 from sqlalchemy import Column, Integer, BigInteger, String, ForeignKey, Date, DECIMAL, Text,\
-    exists, UniqueConstraint
+    exists, UniqueConstraint, Boolean
 from sqlalchemy.orm import sessionmaker, relationship, backref
 from sqlalchemy.types import Enum as SqlEnum
 from sqlalchemy.inspection import inspect
-from datetime import datetime
+from sqlalchemy.ext.compiler import compiles
 
 Base = declarative_base()
 
+class MyBigInteger(BigInteger):
+    pass
+
+@compiles(MyBigInteger, 'sqlite')
+def bi_c(element, compiler, **kw):
+    return "INTEGER"
+
+@compiles(MyBigInteger)
+def bi_c(element, compiler, **kw):
+    return compiler.visit_BIGINT(element, **kw)
+
+# TODO: work around for sqlite primary key autoincrmenet issue
+sqlite = 'sqlite:///shopping.db'
+postgres = 'postgresql+psycopg2://test:123@localhost:5432/shop'
+
+db = sqlite
+if db == sqlite:
+    BigInteger = MyBigInteger
+
 class StoreType(Enum):
+    unknown = 0
     physical = 1
     web = 2
     both = 3
@@ -52,21 +74,21 @@ class Unit(Enum):
             unit_str = ''
         for unit_type, unit_type_strings in str_dict.items():
             if any(s == unit_str for s in unit_type_strings):
-                return unit_type.value
-        return Unit.unknown.value
+                return Unit(unit_type.value)
+        return Unit.unknown
 
 
 class Chain(Base):
     __tablename__ = 'chains'
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
+    id = Column(Integer, primary_key=True) #, autoincrement=True)
     full_id = Column(BigInteger, nullable=False)
-    subchain_id = Column(Integer, default=0)
+    subchain_id = Column(Integer, default=None)
     name = Column(String)
 
     UniqueConstraint(full_id, subchain_id)
 
-    stores = relationship("Store", backref='chain')  # one to many
+    stores = relationship("Store", backref='chain', lazy='joined')  # one to many
     web_access = relationship('ChainWebAccess', backref='chain', uselist=False)  # one to one
 
     def __repr__(self):
@@ -85,7 +107,7 @@ class ChainWebAccess(Base):
 class Store(Base):
     __tablename__ = 'stores'
 
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(Integer, primary_key=True)# , autoincrement=True)
     store_id = Column(Integer)
     chain_id = Column(Integer, ForeignKey(Chain.id))
     name = Column(String)
@@ -94,11 +116,7 @@ class Store(Base):
     type = Column(SqlEnum(StoreType))
     UniqueConstraint(store_id, chain_id)
 
-    # current_prices = relationship("CurrentPrice", backref='store')
-    # prices_history = relationship("PriceHistory", backref='store')
-
     def __repr__(self):
-        # return '{:03}: {}'.format(self.store_id, self.name)
         return '{}-{}:{}'.format(self.chain.name, self.name, self.address)
 
     def __eq__(self, other):
@@ -112,15 +130,17 @@ class Store(Base):
 class Item(Base):
     __tablename__ = 'items'
 
-    id = Column(BigInteger, primary_key=True, index=True, autoincrement=True)
-    code = Column(String)
+    id = Column(BigInteger, primary_key=True, index=True)
+    code = Column(BigInteger)
     quantity = Column(DECIMAL(precision=2))
     unit = Column(SqlEnum(Unit))
+    # TODO: not as discussed, but I think it makes sense to have single unified name the same as for unit and quantity
+    name = Column(Text)
 
-    store_products = relationship('StoreProducts', backref='item', lazy='joined')
+    store_products = relationship('StoreProduct', backref='item', lazy='joined')
 
     def __repr__(self):
-        return '{}: {}'.format(self.name, self.id)
+        return '{}: {}'.format(self.name, self.code)
 
     def __hash__(self):
         return hash(self.id)
@@ -128,44 +148,63 @@ class Item(Base):
     def __eq__(self, other):
         return self.id == other.id
 
+    @staticmethod
+    def from_store_product(product):
+        return Item(code=product.code, quantity=product.quantity, unit=Unit.to_unit(product.unit), name=product.name)
 
-class StoreProducts(Base):
+
+class StoreProduct(Base):
     __tablename__ = 'store_products'
 
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
-    item_id = Column(BigInteger, ForeignKey(Item.id))
+    id = Column(BigInteger, primary_key=True)
+    item_id = Column(BigInteger, ForeignKey(Item.id), nullable=True)
     store_id = Column(BigInteger, ForeignKey(Store.id))
-    internal_id = Column(BigInteger, default=None)  # TODO need default?
+    code = Column(BigInteger)
+    external = Column(Boolean)
     name = Column(Text)
     # saving the quantity/unit_qty for cases that auto parsing don't work, to allow manual parsing
     quantity = Column(Text)
-    unit_quantity = Column(Text)
+    unit = Column(Text)
 
-    current_prices = relationship("CurrentPrice", backref='store_products')
-    prices_history = relationship("PriceHistory", backref='store_products')
+    UniqueConstraint(store_id, code)
+    current_prices = relationship("CurrentPrice", backref='store_product', uselist=False, lazy='joined')
+    prices_history = relationship("PriceHistory", backref='store_product', uselist=False, lazy='joined')
 
+    def is_external(self):
+        return self.external
+
+    def __hash__(self):
+        return hash((self.store_id, self.code))
+
+    def __eq__(self, other):
+        return self.store_id == other.store_id and self.code == other.code
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
 
 class PriceHistory(Base):
     __tablename__ = 'price_history'
 
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
-    store_product_id = Column(BigInteger, ForeignKey(StoreProducts.id))
+    id = Column(BigInteger, primary_key=True)
+    store_product_id = Column(BigInteger, ForeignKey(StoreProduct.id))
     start_date = Column(Date, default=datetime.today, index=True)
-    end_date = Column(Date, default=datetime.today, index=True)
+    end_date = Column(Date, default=None, index=True) # None means current
+    price = Column(DECIMAL(precision=2))
 
     UniqueConstraint(start_date, store_product_id)
 
 class CurrentPrice(Base):
     __tablename__ = 'current_price'
 
-    store_product_id = Column(BigInteger, ForeignKey(StoreProducts.id))
-    price = Column(DECIMAL(precision=2), primary_key=True)
+    id = Column(BigInteger, primary_key=True)
+    store_product_id = Column(BigInteger, ForeignKey(StoreProduct.id))
+    price = Column(DECIMAL(precision=2), index=True)
 
-
+# """
 class Promotions(Base):
     __tablename__ = 'promotions'
 
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger, primary_key=True) #, autoincrement=True)
     store_id = Column(BigInteger, ForeignKey(Store.id))
     internal_promotion_code = Column(BigInteger)
     description = Column(Text)
@@ -196,7 +235,7 @@ class RestrictionType(Enum):
 class Restrictions(Base):
     __tablename__  = 'restrictions'
 
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger, primary_key=True) #, autoincrement=True)
     promotion_id = Column(BigInteger, ForeignKey(Promotions.id), index=True)
     restriction_type = Column(SqlEnum(RestrictionType))
     amount = Column(Integer, default=None)
@@ -215,11 +254,8 @@ class PriceFunction(Base):
     function_type = Column(SqlEnum(PriceFunctionType))
     value = Column(DECIMAL(precision=2))
 
+# """
 
-sqlite = 'sqlite:///shopping.db'
-postgres = 'postgresql+psycopg2://test:123@localhost:5432/shop'
-
-db = sqlite
 class SessionController(object):
     """
     This is the DB access interface
@@ -237,16 +273,16 @@ class SessionController(object):
     def get_session(self):
         return self.session
 
-    def query(self, model):
+    def query(self, *args):
         """
         Get a
         Args:
-            model:
+            models:
 
         Returns:
 
         """
-        return self.session.query(model)
+        return self.session.query(*args)
 
     def exists(self, obj_field, value):
         (ret, ), = self.session.query(exists().where(obj_field == value))
@@ -365,6 +401,7 @@ def main():
     # for item in items.values():
     #     session.add(Item(item.code, item.Chain, item))
     session.commit()
+
 
 if __name__ == '__main__':
     main()

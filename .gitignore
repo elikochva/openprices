@@ -17,5 +17,5 @@ docs/_build/
 # profiling files
 *.prof
 
-*.db
+#*.db
 
