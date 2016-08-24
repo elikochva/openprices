@@ -1,0 +1,21 @@
+# Created by .ignore support plugin (hsz.mobi)
+# IntelliJ project files
+.idea
+# Byte-compiled / optimized / DLL files
+__pycache__/
+
+# C extensions
+
+# Sphinx documentation
+docs/_build/
+
+# data files
+*.xml
+*.gz
+*.zip
+
+# profiling files
+*.prof
+
+*.db
+
