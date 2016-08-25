@@ -58,10 +58,7 @@ TODO
 Code dependencies:
 ==================
 * python 3 - probably will run on 2.7 also assuming all other dependencies are met...
-* BeautifulSoup (bs4) (webpage parsing)
-* SqlAlchemy (1.1.0b3 - beta version, since native Enum support isn't working in earlier versions)
-* lxml (for fast xml parsing - can be replaced by native xml of python in imports)
-* requests (online resource fetching)
+see requirements.txt (pip install -r requirements.txt)
 
 
 online resources:

@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 from datetime import date
-import matplotlib
-from matplotlib import pyplot
+# import matplotlib
+# from matplotlib import pyplot
 import logging
-from sql_interface import Chain, Store, Item, CurrentPrice, PriceHistory, SessionController, sqlite
+from sql_interface import Chain, Store, Item, CurrentPrice, PriceHistory, SessionController, StoreProduct
 import xml_parser
 
 
@@ -48,59 +48,6 @@ class Basket(ItemList):
     pass
 
 
-class UI(object):
-
-    def __init__(self):
-        self.db = SessionController()#db_path=sqlite)
-
-    def get_item_history(self, item):
-        """
-        get all the history prices values of given item
-        Args:
-            item_id:
-            store:
-
-        Returns:
-            query of PriceHistory with the given conditions
-        """
-
-        q = self.db.query(PriceHistory)
-        cond = [
-            PriceHistory.item_id == item.item_id,
-            # PriceHistory.chain_id == chain.id,
-            PriceHistory.store_id == item.store_id
-        ]
-        res = self.db.filter_and(q, cond).all()
-        return res
-
-    def find_items_with_history(self):
-        """
-        Helper function for testing purposes.
-        returns query of all items that have history data
-        """
-        q = self.db.query(PriceHistory)
-        cond = [
-            PriceHistory.end_date != None,
-            PriceHistory.store_id == 1,
-        ]
-        return self.db.filter_and(q, cond).yield_per(10000)
-
-    def main(self):
-        matplotlib.rc('font', family='Arial')
-        items = self.find_items_with_history()
-        # import random
-        # item_i = random.randint(0, len(items))
-
-        for item in items:
-            h = self.get_item_history(item)
-            dates = [(i.start_date, i.end_date if i.end_date else date.today()) for i in h]
-            prices = [(i.price, i.price) for i in h]
-            dates = [item for sublist in dates for item in sublist]
-            prices = [item for sublist in prices for item in sublist]
-            pyplot.plot(dates, prices, label=h[0].item.name)
-            break
-        pyplot.legend()
-        pyplot.show()
 
 
 class ShopPlanner(object):
@@ -179,6 +126,48 @@ class ShopPlanner(object):
         if res:
             return res[0]
 
+
+class UI(object):
+    def __init__(self, db=None):
+        self.db = db or SessionController('sqlite:///linux_test.db')
+
+    def get_city_stores(self, city):
+        """
+        get list of all stores in given city
+        Args:
+            city(str): city name
+
+        Returns:
+
+        """
+        q = self.db.query(Store)
+        return self.db.filter_or(q, [Store.city == city, Store.name == city]).all()
+
+    def get_store_items(self, store):
+        """
+        get list of all items in store
+        Args:
+            store:
+
+        Returns:
+
+        """
+
+        store_products = self.db.query(StoreProduct).filter(StoreProduct.store_id == store.id).all()
+        ids = [p.id for p in store_products]
+        q = self.db.query(PriceHistory).join(StoreProduct).filter(PriceHistory.end_date == None)
+        prices = []
+        for i in range(0, len(ids), 100):
+            prices.extend(self.db.filter_in(q, PriceHistory.store_product_id, ids[i:i+99]).all())
+        return prices
+
+
 if __name__ == '__main__':
     ui = UI()
-    ui.main()
+    stores = ui.get_city_stores('לוד')
+    # return
+    for store in stores:
+        if store.id == 423:
+            prices_history = ui.get_store_items(store)
+            for p in prices_history[:10]:
+                print(p)

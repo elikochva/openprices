@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import os
 import re
 import logging
@@ -184,9 +185,9 @@ class GovDataScraper(object):
         for line in lines:
             data = data_match(line)
             if data:
-                if 'שם משתמש' in line:
+                if u'שם משתמש' in line:
                     user = data.group()
-                if 'סיסמא' in line or 'סיסמה' in line:
+                if u'סיסמא' in line or u'סיסמה' in line:
                     password = data.group()
         return user, password
 

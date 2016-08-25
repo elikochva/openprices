@@ -1,10 +1,15 @@
+# -*- coding: utf-8 -*-
 import re
 import os
 import zipfile
 import gzip
 import logging
 from datetime import datetime, timedelta
-import lxml.etree as ET
+try:
+    import lxml.etree as ET
+except ImportError:
+    import xml.etree.cElementTree as ET
+
 from sql_interface import Chain, Item, Store, CurrentPrice, PriceHistory, Unit, SessionController, \
     StoreType, StoreProduct
 

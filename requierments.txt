@@ -1,0 +1,7 @@
+beautifulsoup4==4.5.1
+SQLAlchemy==1.1.0b3
+lxml>=3.4
+requests==2.10
+enum34 >= 1.1.6 ; python_version < '3.4'
+# requests[socks]==2.11.1
+# matplotlib (for ui only) - for advanced users...

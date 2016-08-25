@@ -1,7 +1,8 @@
+# -*- coding: utf-8 -*-
 import logging
 from enum import Enum
-from datetime import datetime
-
+# from datetime import datetime
+import datetime
 from sqlalchemy import create_engine, or_, and_, not_, MetaData
 from sqlalchemy.ext.declarative import declarative_base, declared_attr
 from sqlalchemy import Column, Integer, BigInteger, String, ForeignKey, Date, DECIMAL, Text,\
@@ -167,8 +168,8 @@ class StoreProduct(Base):
     unit = Column(Text)
 
     UniqueConstraint(store_id, code)
-    current_prices = relationship("CurrentPrice", backref='store_product', uselist=False, lazy='joined')
-    prices_history = relationship("PriceHistory", backref='store_product', uselist=False, lazy='joined')
+    current_prices = relationship("CurrentPrice", backref='store_product', uselist=False)#, lazy='joined')
+    prices_history = relationship("PriceHistory", backref='store_product', uselist=False)#, lazy='joined')
 
     def is_external(self):
         return self.external
@@ -187,11 +188,14 @@ class PriceHistory(Base):
 
     id = Column(BigInteger, primary_key=True)
     store_product_id = Column(BigInteger, ForeignKey(StoreProduct.id))
-    start_date = Column(Date, default=datetime.today, index=True)
+    start_date = Column(Date, default=datetime.date.today, index=True)
     end_date = Column(Date, default=None, index=True) # None means current
     price = Column(DECIMAL(precision=2))
 
     UniqueConstraint(start_date, store_product_id)
+
+    def __repr__(self):
+        return '{}: {}<->{} = {}'.format(self.store_product.name, self.start_date, self.end_date, self.price)
 
 class CurrentPrice(Base):
     __tablename__ = 'current_price'
@@ -199,6 +203,9 @@ class CurrentPrice(Base):
     id = Column(BigInteger, primary_key=True)
     store_product_id = Column(BigInteger, ForeignKey(StoreProduct.id))
     price = Column(DECIMAL(precision=2), index=True)
+
+    def __repr__(self):
+        return '{}: {}'.format(self.store_product.name, self.price)
 
 # """
 class Promotions(Base):
@@ -208,8 +215,8 @@ class Promotions(Base):
     store_id = Column(BigInteger, ForeignKey(Store.id))
     internal_promotion_code = Column(BigInteger)
     description = Column(Text)
-    start_date = Column(Date, default=datetime.date)
-    end_date = Column(Date, default=datetime.date)
+    start_date = Column(Date, default=datetime.date.today)
+    end_date = Column(Date, default=datetime.date.today)
     UniqueConstraint(store_id, internal_promotion_code)
 
     items = relationship('PromotionItems', backref='promotion', lazy='joined')
