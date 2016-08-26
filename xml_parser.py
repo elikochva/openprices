@@ -4,7 +4,7 @@ import os
 import zipfile
 import gzip
 import logging
-from datetime import datetime, timedelta
+from datetime import timedelta, date
 try:
     import lxml.etree as ET
 except ImportError:
@@ -12,8 +12,11 @@ except ImportError:
 
 from sql_interface import Chain, Item, Store, CurrentPrice, PriceHistory, Unit, SessionController, \
     StoreType, StoreProduct
-
 import web_scraper
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 float_re = re.compile(r'\d+\.*\d*')
 
 shufersal_full_id = 7290027600007 # needed for folder name workaround
@@ -21,9 +24,7 @@ mega_full_id = 7290055700007
 zol_full_id = 7290058140886
 
 class ChainXmlParser(object):
-    def __init__(self, db_chain, db=None, logger=None):
-        logging.basicConfig(level=logging.INFO)
-        self.logger = logger or logging.getLogger(__name__)
+    def __init__(self, db_chain, db=None):
         self.db = db or SessionController()
         self.page_size = 100000
         self.chain = db_chain
@@ -122,7 +123,7 @@ class ChainXmlParser(object):
             chain: DB Chain
         """
         chain = self.chain
-        self.logger.info('Parsing {} stores'.format(chain))
+        logger.info('Parsing {} stores'.format(chain))
         stores_file = self.get_stores_file()
         xml = self.get_parsed_file(stores_file)
 
@@ -155,7 +156,7 @@ class ChainXmlParser(object):
         existing_stores_ids = set(store.store_id for store in self.db.query(Store).filter(Store.chain_id == chain.id).all())
         new_stores = [store for store in stores if store.store_id not in existing_stores_ids]
         if new_stores:
-            self.logger.info('adding {} new stores to chain {}\n'.format(len(new_stores), chain))
+            logger.info('adding {} new stores to chain {}\n'.format(len(new_stores), chain))
             self.db.bulk_insert(new_stores)
             self.db.commit()
 
@@ -193,7 +194,7 @@ class ChainXmlParser(object):
             price = self.elm2float(item_elm, 'itemprice')
             products_prices[item] = price
 
-        self.logger.info('Parsed items: {}'.format(len(products_prices)))
+        logger.info('Parsed items: {}'.format(len(products_prices)))
         return products_prices
 
     @staticmethod
@@ -216,7 +217,7 @@ class ChainXmlParser(object):
                 code = product_group[0].code
                 length = len(product_group)
                 item_id = item_codes_ids[code]
-                db.bulk_update(StoreProduct,
+                db.bulk_update(StoreProduct,   # TODO: Am I using it correctly???? no!!!
                                dict(
                                    zip(product_group, [item_id] * length)
                                    )
@@ -228,7 +229,35 @@ class ChainXmlParser(object):
 
         db.commit()
 
-    def parse_store_prices(self, store, date=None):
+    @staticmethod
+    def set_internal_items_ids(db):
+        """
+        need an easy interface for finding all internal items, across all stores, that are actually the same item.
+         then we can manually assign them to same Item.
+
+         flow should be something like this:
+             get part of the item name
+             find all store products that *may* match
+                possible options:
+                a. only products without item id
+                b. also products with item id (probably less useful)
+
+             manually choose all that are the same
+             verify selection
+             - now we have a group of same product from different stores
+             look if there is possible existing Item that match this group.
+                if there is - assign the group to it
+                if not - create one, and assign the group to it
+
+        Args:
+            db:
+
+        Returns:
+
+        """
+        pass
+
+    def parse_store_prices(self, store, file_date=None):
         """
         for a given Chain and Store, parse prices file from (date) and add the items to DB.
 
@@ -239,140 +268,180 @@ class ChainXmlParser(object):
         Args:
             store: DB Store
         """
-        date = date or datetime.today()
-        self.logger.info('Parsing store: {} prices ({})'.format(store, date))
+        file_date = file_date or date.today()
+        logger.info('Parsing store: {} prices ({})'.format(store, file_date))
         try:
-            prices_xml = self.get_prices_file(store, date)
+            prices_xml = self.get_prices_file(store, file_date)
         except BaseException:
-            self.logger.exception("something want bad when trying to get prices for {}".format(store))
+            logger.exception("something went wrong while trying to get prices for {}".format(store))
             return
         # TODO change handling on all lower levels to raise exceptions
         if prices_xml is None:
-            self.logger.warn("Missing prices xml for {}!".format(store))
+            logger.warn("Missing prices xml for {}!".format(store))
             return
-
-        chain_id = self.chain.id
-        store_id = store.id
-
-        parsed_products_prices = self.get_items_prices(store, prices_xml)
+        # get all products from the file
+        products_prices = self.get_items_prices(store, prices_xml)
 
         # 1) add new items to main items table
+        self.add_new_items(products_prices)
+
+        # 2) add new products to store_products table
+        self.add_new_store_products(store, products_prices)
+
+        self.db.flush()  # need to commit in order to assign ids to Items and StoreProducts #TODO maybe session.flush?
+
+        # 3) update price history table
+        self.update_history_table(store, products_prices)
+
+        self.db.flush()  # commit needed for next step
+
+        # update current prices table
+        self.update_current_prices(store)
+        self.db.commit()  # finally - commit everything ot DB
+
+    def add_new_items(self, products_prices):
+        """
+        Add new items (if found such) to items table
+
+        Args:
+            products_prices:
+
+        Returns:
+
+        """
         existing_items_codes = set(code for code, # this ',' is there for unpacking the results
                                    in self.db.query(Item.code).yield_per(self.page_size))
 
-        # need to separate internal items from regular items
-
-        # TODO internal products not used right now since some manual manipulation needed here
-        global_products = set(product for product in parsed_products_prices if product.is_external())
-
+        global_products = set(product for product in products_prices if product.is_external())
         new_global_items = set(item for item in global_products if item.code not in existing_items_codes)
         if new_global_items:
             new_items = [Item.from_store_product(product) for product in new_global_items] # generate new Items
-            self.logger.info('adding new global items to items table ({})'.format(len(new_items)))
+            logger.info('adding new global items to items table ({})'.format(len(new_items)))
             self.db.bulk_insert(new_items)
 
-        # 2) add new products to store_products table
-        exiting_store_products_codes = set(code for code,   # this ',' is there for unpacking the results
-            in self.db.query(StoreProduct.code).filter(StoreProduct.store_id == store_id).yield_per(self.page_size))
+    def add_new_store_products(self, store, products_prices):
+        """
+        Add new products to store (if any new products exist)
 
-        new_store_products = set(product for product in parsed_products_prices if product.code not in exiting_store_products_codes)
-        if new_store_products:
-            self.logger.info('adding new store products to store products table ({})'.format(len(new_store_products)))
-            # for i in new_store_products:
-                # self.db.add(i)
-            self.db.bulk_insert(new_store_products)
-        self.db.commit()
+        Args:
+            store:
+            products_prices:
 
+        Returns:
 
-        # 4) update price history table
-        db_products = set(self.db.query(StoreProduct).filter(StoreProduct.store_id == store_id).all())
-        # since __hash__ and __eq__ for StoreProduct are defined by (store_id, code) we can do this trick
-        parsed_products_prices = dict([(product, parsed_products_prices[product]) for product in db_products if product in parsed_products_prices])
-        parsed_ids = set(p.id for p in parsed_products_prices)
+        """
+        exiting_codes = set(code for code,  # this ',' is there for unpacking the results
+                           in self.db.query(StoreProduct.code).filter(
+                           StoreProduct.store_id == store.id).yield_per(self.page_size))
 
-        all_products = set(self.db.query(PriceHistory).join(StoreProduct)\
-            .filter(StoreProduct.store_id == store_id) \
-            .filter(PriceHistory.end_date == None).yield_per(self.page_size))
-        # is None test won't work here^
-        all_products_ids = set(p.store_product_id for p in all_products)
-
-        # we have 3 different categories here
-        # 1) items that don't have current price (new items, or that were out of store)
-        new_products = [
-            PriceHistory(store_product_id=product.id, price=parsed_products_prices[product])
-            for product in parsed_products_prices if product.id not in all_products_ids
-            ]
+        new_products = set(product for product in products_prices if product.code not in exiting_codes)
         if new_products:
-            self.logger.info('Adding {} items with no current price'.format(len(new_products)))
+            logger.info('adding new store products to store products table ({})'.format(len(new_products)))
             self.db.bulk_insert(new_products)
 
-        # 2) items that were removed from store today - need to update end_date
-        # (appear in db as having current price (have end_date == None), but not appearing in today file)
-        removed_from_store = [product for product in all_products if product.store_product_id not in parsed_ids]  # TODO change to set methods
+    def update_history_table(self, store, products_prices):
+        """
+        Update price history table to include the changes that new parsing had found.
+
+        see comments in code for full flow description.
+
+        Args:
+            store:
+            products_prices:
+
+        """
+        store_id = store.id
+        # there is a need to have StoreProducts with actual IDs (the ones created in the xml parsing stage has their
+        # id set to None until added to DB.
+        # since __hash__ and __eq__ for StoreProduct are defined by (store_id, code), we can do this trick
+        # that will switch the unassigned products with existing ones (that have id)
+        db_products = set(self.db.query(StoreProduct).filter(StoreProduct.store_id == store_id).all())
+        products_prices = dict(
+            [(product, products_prices[product]) for product in db_products if product in products_prices])
+
+        parsed_ids = set(p.id for p in products_prices)
+
+        all_products = set(self.db.query(PriceHistory).join(StoreProduct) \
+                           .filter(StoreProduct.store_id == store_id) \
+                           .filter(PriceHistory.end_date == None).yield_per(self.page_size))
+                            # is None test won't work here^
+
+        all_products_ids = set(p.store_product_id for p in all_products)
+
+        # we have 3 different stages here
+
+        # 1) add items that don't have current price (new items, or that were out of store)
+        new_products = [PriceHistory(store_product_id=product.id, price=products_prices[product])
+                        for product in products_prices if product.id not in all_products_ids]
+        if new_products:
+            logger.info('Adding {} new items (no current price) to history table'.format(len(new_products)))
+            self.db.bulk_insert(new_products)
+
+        # 2) update end_date for items that were removed from store today
+        # (appear in db as having current price (have end_date == None), and not appearing in today file)
+        removed_from_store = [p for p in all_products if p.store_product_id not in parsed_ids]  # TODO change to set methods
         if removed_from_store:
-            self.logger.info('Updating end_date to yesterday for all items that are out of store ({})'.
+            logger.info('Updating end_date to yesterday for all items that are out of store ({})'.
                              format(len(removed_from_store)))
-            for item in removed_from_store:
+            for item in removed_from_store:  # TODO bulk_update
                 # update end_date to yesterday # TODO (or for today?)
-                item.end_date = date - timedelta(days=1)
+                item.end_date = date.today() - timedelta(days=1)
 
         # 3) items that need to update their current price:
-        # all items with end_date == None and also appear in db_products_prices  are possible candidates for this.
+        # all items with end_date == None and also appear in db_products_prices are possible candidates for this.
+
         #   a) need to find all items that have new prices
         update_candidate_ids = set(p.store_product_id for p in all_products if p.store_product_id in parsed_ids)
-        ids_prices = dict((p.store_product_id, p.price) for p in all_products if p.store_product_id in update_candidate_ids)
-        updated_parsed_products = [product for product in parsed_products_prices if
+        ids_prices = dict(
+            (p.store_product_id, p.price) for p in all_products if p.store_product_id in update_candidate_ids
+        )
+        updated_parsed_products = [product for product in products_prices if
                                    product.id in update_candidate_ids and
-                                   abs(float(ids_prices[product.id]) - parsed_products_prices[product]) > 0.01 # TODO better type safety for this check
+                                   abs(float(ids_prices[product.id]) - products_prices[product]) > 0.01
+                                   # TODO better type safety for this check
                                    ]
 
         updated_products_ids = set(p.id for p in updated_parsed_products)
 
-        new_prices = [PriceHistory(store_product_id=product.id, price=parsed_products_prices[product])
+        new_prices = [PriceHistory(store_product_id=product.id, price=products_prices[product])
                       for product in updated_parsed_products]
 
         if new_prices:
-            self.logger.info('Inserting new entries for all items with new price ({})'.format(len(new_prices)))
+            logger.info('Inserting new entries for all items with new price ({})'.format(len(new_prices)))
             self.db.bulk_insert(new_prices)
 
-        #   b) need to update old entry to have yesterday(?) [assuming code is running every day] as last date for previous price
-        history_updated_products = [product for product in all_products if product.store_product_id in updated_products_ids]
+        # b) need to update old entry to have yesterday(?) as last date for previous price
+        # [assuming code is running every day]
+        history_updated_products = [product for product in all_products if
+                                    product.store_product_id in updated_products_ids]
         if history_updated_products:
-            self.logger.info('Updating end_date to yesterday for all items that have new price ({})'.
+            logger.info('Updating end_date to yesterday for all items that have new price ({})'.
                              format(len(history_updated_products)))
-            for item in history_updated_products:
-                item.end_date = date - timedelta(days=1)
-        self.db.commit()
+            for item in history_updated_products:  # TODO bulk update
+                item.end_date = date.today() - timedelta(days=1)
 
-        # TODO: need to update the current prices table (db or python???)
-        # need to:
-        # 1) update existing items with new prices if price had changed
-        # 2) add new items if don't exist
-        # 3) remove items that were dropped from store
+    def update_current_prices(self, store):
+        """
+        Update current prices table for this store.
+        Assuming price history table is already updated (and committed)
 
-        # short way (for now at least)
-        # remove all current items
+        Args:
+            store:
+        """
+        # this is brute force solution, but probably the fastest...
+        old_current_prices = self.db.query(CurrentPrice).join(StoreProduct) \
+                              .filter(StoreProduct.store_id == store.id).yield_per(self.page_size)
+        for item in old_current_prices:
+            self.db.delete(item)
 
-        # get all items for this store
-        self.logger.warn('updating current price table is working currently :(((((((')
-        return
-        current_products = self.db.query(CurrentPrice).join(StoreProduct).filter(StoreProduct.store_id == store_id).yield_per(self.page_size)
-        ids = set(p.id for p in current_products)
-        q = self.db.query(CurrentPrice).order_by()
-        current_products = self.db.filter_in(q, CurrentPrice.id, ids).yield_per(self.page_size)
-        self.logger.info('Deleting all items for {} from current items table'.format(store))
-        current_products.delete(synchronize_session=False).limit(1000)
+        self.db.flush()
+        new_current_prices = self.db.query(PriceHistory).join(StoreProduct) \
+                              .filter(StoreProduct.store_id == store.id) \
+                              .filter(PriceHistory.end_date == None).yield_per(self.page_size)
 
-        # Must have commit before next step
-        self.db.commit()
-
-        current_products = [
-            CurrentPrice(store_product_id=product.id, price=parsed_products_prices [product])
-            for product in parsed_products_prices]
-
-        self.logger.info('Inserting all current items({})'.format(len(current_products)))
-        self.db.bulk_insert(current_products)
-        self.db.commit()
+        self.db.bulk_insert([
+            CurrentPrice(store_product_id=p.store_product_id, price=p.price) for p in new_current_prices
+        ])
 
     @staticmethod
     def get_parsed_file(file_path):
@@ -421,8 +490,8 @@ class ChainXmlParser(object):
         """
         stores_file = self.get_file_path(parent_folder=self.get_folder(), pattern=web_scraper.ChainScraper.get_stores_pattern(date))
         if stores_file is None:
-            self.logger.info("couldn't find Stores file for chain: {}, date {}".format(self.chain, date))
-            self.logger.info("Trying to download it...")
+            logger.info("couldn't find Stores file for chain: {}, date {}".format(self.chain, date))
+            logger.info("Trying to download it...")
             chain_scraper = web_scraper.db_chain_factory(self.chain)
             stores_file = chain_scraper.get_stores_xml(date)
         return stores_file
@@ -431,8 +500,8 @@ class ChainXmlParser(object):
         pattern = web_scraper.ChainScraper.get_prices_pattern(store.store_id, date)
         prices_file = self.get_file_path(self.get_folder(), pattern)
         if prices_file is None:
-            self.logger.info("couldn't find Prices file for store: {}".format(store))
-            self.logger.info("Trying to download it...")
+            logger.info("couldn't find Prices file for store: {}".format(store))
+            logger.info("Trying to download it...")
             chain_scraper = web_scraper.db_chain_factory(self.chain)
             prices_file = chain_scraper.get_prices_xml(store.store_id, pattern, date)
         return self.get_parsed_file(prices_file)

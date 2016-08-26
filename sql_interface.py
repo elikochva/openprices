@@ -12,6 +12,9 @@ from sqlalchemy.types import Enum as SqlEnum
 from sqlalchemy.inspection import inspect
 from sqlalchemy.ext.compiler import compiles
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 Base = declarative_base()
 
 class MyBigInteger(BigInteger):
@@ -26,11 +29,15 @@ def bi_c(element, compiler, **kw):
     return compiler.visit_BIGINT(element, **kw)
 
 # TODO: work around for sqlite primary key autoincrmenet issue
-sqlite = 'sqlite:///shopping.db'
-postgres = 'postgresql+psycopg2://test:123@localhost:5432/shop'
 
-db = sqlite
-if db == sqlite:
+dbs = {
+    'sqlite_development': 'sqlite:///shopping.db',
+    'sqlite_testing': 'sqlite:///test.db',
+    'postgres_development': 'postgresql+psycopg2://test:123@localhost:5432/shop'
+}
+db = dbs['sqlite_development']
+
+if 'sqlite' in db:
     BigInteger = MyBigInteger
 
 class StoreType(Enum):
@@ -92,7 +99,7 @@ class Chain(Base):
     stores = relationship("Store", backref='chain', lazy='joined')  # one to many
     web_access = relationship('ChainWebAccess', backref='chain', uselist=False)  # one to one
 
-    def __repr__(self):
+    def __str__(self):
         return self.name
 
 
@@ -120,6 +127,9 @@ class Store(Base):
     def __repr__(self):
         return '{}-{}:{}'.format(self.chain.name, self.name, self.address)
 
+    def __str__(self):
+        return '{}-{}:{}'.format(self.chain.name, self.name, self.address)
+
     def __eq__(self, other):
         # must be different for different  chain-store combination because of the UniqueConstraint
         return self.id == other.id
@@ -132,15 +142,15 @@ class Item(Base):
     __tablename__ = 'items'
 
     id = Column(BigInteger, primary_key=True, index=True)
-    code = Column(BigInteger)
+    code = Column(BigInteger, index=True)
     quantity = Column(DECIMAL(precision=2))
     unit = Column(SqlEnum(Unit))
     # TODO: not as discussed, but I think it makes sense to have single unified name the same as for unit and quantity
-    name = Column(Text)
+    name = Column(Text, index=True)
 
     store_products = relationship('StoreProduct', backref='item', lazy='joined')
 
-    def __repr__(self):
+    def __str__(self):
         return '{}: {}'.format(self.name, self.code)
 
     def __hash__(self):
@@ -168,12 +178,17 @@ class StoreProduct(Base):
     unit = Column(Text)
 
     UniqueConstraint(store_id, code)
+
     current_prices = relationship("CurrentPrice", backref='store_product', uselist=False)#, lazy='joined')
     prices_history = relationship("PriceHistory", backref='store_product', uselist=False)#, lazy='joined')
 
     def is_external(self):
         return self.external
 
+    def __str__(self):
+        return self.name
+
+    # __eq__ and __hash__ are defined for easier set/dict usage
     def __hash__(self):
         return hash((self.store_id, self.code))
 
@@ -182,6 +197,7 @@ class StoreProduct(Base):
 
     def __ne__(self, other):
         return not self.__eq__(other)
+
 
 class PriceHistory(Base):
     __tablename__ = 'price_history'
@@ -197,15 +213,28 @@ class PriceHistory(Base):
     def __repr__(self):
         return '{}: {}<->{} = {}'.format(self.store_product.name, self.start_date, self.end_date, self.price)
 
+
 class CurrentPrice(Base):
     __tablename__ = 'current_price'
 
-    id = Column(BigInteger, primary_key=True)
-    store_product_id = Column(BigInteger, ForeignKey(StoreProduct.id))
+    store_product_id = Column(BigInteger, ForeignKey(StoreProduct.id), primary_key=True)
     price = Column(DECIMAL(precision=2), index=True)
+
+    UniqueConstraint(store_product_id)
+
+    def __hash__(self):
+        return hash(self.store_product_id)
+
+    # __eq__ and __hash__ are defined for easier set/dict usage
+    def __eq__(self, other):
+        return self.store_product_id == other.store_product_id
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
 
     def __repr__(self):
         return '{}: {}'.format(self.store_product.name, self.price)
+
 
 # """
 class Promotions(Base):
@@ -267,15 +296,13 @@ class SessionController(object):
     """
     This is the DB access interface
     """
-    def __init__(self, db_path=db, db_logging=False, logger=None):
-        logging.basicConfig(level=logging.INFO)
-        self.logger = logger or logging.getLogger(__name__)
-        self.logger.info('connecting to DB')
+    def __init__(self, db_path=db, db_logging=False):
+        logger.info('connecting to DB: {}'.format(db_path))
         self.engine = create_engine(db_path, echo=db_logging)
         Session = sessionmaker(bind=self.engine)
         self.session = Session()
         Base.metadata.create_all(self.engine)
-        self.logger.info('DB connected')
+        logger.info('DB connected')
 
     def get_session(self):
         return self.session
@@ -305,7 +332,10 @@ class SessionController(object):
         self.session.bulk_save_objects(objects)
 
     def bulk_update(self, mapper, mappings):
-        self.session.bulk_update_mapping(mapper, mappings)
+        self.session.bulk_update_mappings(mapper, mappings)
+
+    def flush(self):
+        self.session.flush()
 
     def commit(self):
         """
@@ -313,14 +343,14 @@ class SessionController(object):
         Returns:
 
         """
-        self.logger.info('Committing to db')
+        logger.info('Committing to db')
         try:
             self.session.commit()
         except Exception:
-            self.logger.exception('Commit to DB failed')
+            logger.exception('Commit to DB failed')
             self.session.rollback()
             return False
-        self.logger.info('Commit ended successfully')
+        logger.info('Commit ended successfully')
         return True
 
     def update(self, model, update_dict):
@@ -334,6 +364,9 @@ class SessionController(object):
 
     def add(self, model):
         return self.session.add(model)
+
+    def delete(self, row):
+        self.session.delete(row)
 
     def get(self, model, **kwargs):
         instance = self.query(model).filter_by(**kwargs).first()
@@ -373,7 +406,7 @@ class SessionController(object):
         return q.all()
 
     def _drop_table(self, model):
-        self.logger.info('Dropping table {}'.format(model.__table__))
+        logger.info('Dropping table {}'.format(model.__table__))
         model.__table__.drop(self.engine)
 
     def filter_or(self, query, conditions):

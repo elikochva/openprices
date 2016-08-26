@@ -2,7 +2,7 @@
 import os
 import re
 import logging
-from datetime import datetime
+from datetime import date
 import requests
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
 import unicodedata
@@ -14,6 +14,9 @@ import xml_parser
 # remove annoying logger prints from requests
 requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 logging.getLogger("requests").setLevel(logging.WARNING)
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 file_pattern = re.compile(
     r'.*(?P<type>Stores|Promo|Price(s)?)'
@@ -120,8 +123,6 @@ class GovDataScraper(object):
     """
 
     def __init__(self, db=None):
-        logging.basicConfig(level=logging.INFO)
-        self.logger = logging.getLogger(__name__)  # logger or
         self.db = db or SessionController()
         self.chain_table_url = "http://www.economy.gov.il/Trade/ConsumerProtection/Pages/PriceTransparencyRegulations.aspx"
 
@@ -137,6 +138,7 @@ class GovDataScraper(object):
         while not tag('table'):
             tag = tag.parent
         table = tag
+        chains_data = {} # TODO for faster parsing store first all data, and then iterate ony after non existent chains
 
         full_subchains_ids = self.db.query(Chain.full_id, Chain.subchain_id).all()
         for row in table.find('tbody').find_all('tr'):
@@ -148,20 +150,20 @@ class GovDataScraper(object):
                 username, password = self.parse_login_data(cells[2])
                 chain_scraper = web_scraper_factory(name, url, username, password)
                 if chain_scraper is None:
-                    self.logger.warn("No scarper defined for {} ({})".format(name, url))
+                    logger.warn("No scarper defined for {} ({})".format(name, url))
                     continue
 
                 full_id = chain_scraper.get_chain_full_id()
                 if full_id is None:
-                    self.logger.warn("Couldn't find full id for {}.\n skipping".format(name))
+                    logger.warn("Couldn't find full id for {}.\n skipping".format(name))
                     continue
 
                 subchains_ids = chain_scraper.get_subchains_ids()
                 for subchain in subchains_ids:
                     if (int(full_id), subchain) in full_subchains_ids:
-                        self.logger.info("chain {} already in DB ".format(name))
+                        logger.info("chain {} already in DB ".format(name))
                         continue
-                    self.logger.info('Adding chain {}'.format(name))
+                    logger.info('Adding chain {}'.format(name))
                     chain = Chain(full_id=full_id, name=name, subchain_id=subchain)
                     self.db.add(chain)
                     self.db.commit()  # need to commit for getting the chain.id set by the DB
@@ -209,8 +211,6 @@ class ChainScraper(object):
     """
 
     def __init__(self, url, chain_name=None, username='', password=''):
-        logging.basicConfig(level=logging.INFO)
-        self.logger = logging.getLogger(__name__) # logger or
         self.name = chain_name
         self.url = url
         # self.base_page = None
@@ -247,7 +247,7 @@ class ChainScraper(object):
             os.makedirs(self.name)
         return self.name
 
-    def download_all_data(self, date=None):
+    def download_all_data(self, file_d=None):
         """
         will download all relevant files from the chain web page, and return list of paths to the files
         Args:
@@ -256,10 +256,11 @@ class ChainScraper(object):
         Returns:
             list(str): list of paths to downloaded files
         """
-        pattern = self.set_pattern_date(full_file_pattern, date)
-        return self.download_files_by_pattern(pattern, date)
+        file_d = file_d or date.today()
+        pattern = self.set_pattern_date(full_file_pattern, file_d)
+        return self.download_files_by_pattern(pattern, file_d)
 
-    def download_files_by_pattern(self, pattern=file_pattern, date=None):
+    def download_files_by_pattern(self, pattern=file_pattern, d=None):
         """
         download all files that match the given pattern
         Args:
@@ -291,7 +292,7 @@ class ChainScraper(object):
         return file_path
 
     @staticmethod
-    def set_pattern_date(pattern, date):
+    def set_pattern_date(pattern, d):
         """
         set the date for a given (file) pattern
         Args:
@@ -303,7 +304,7 @@ class ChainScraper(object):
         """
         return re.compile(re.sub(
             re.escape(r'(?P<date>(?P<year>\d{4})(?P<month>\d{2})(?P<day>\d{2}))'),
-            r'(?P<date>(?P<year>{:04})(?P<month>{:02})(?P<day>{:02}))'.format(date.year, date.month, date.day),
+            r'(?P<date>(?P<year>{:04})(?P<month>{:02})(?P<day>{:02}))'.format(d.year, d.month, d.day),
             pattern.pattern))
 
     @staticmethod
@@ -311,18 +312,18 @@ class ChainScraper(object):
         return re.compile(re.sub(re.escape('(?P<store>\d{2,3})'), r'(?P<store>{:03})'.format(store_id), pattern.pattern))
 
     @staticmethod
-    def get_prices_pattern(store_id, date=None):
-        pattern = ChainScraper.set_pattern_date(price_file_pattern, date)
+    def get_prices_pattern(store_id, d=None):
+        pattern = ChainScraper.set_pattern_date(price_file_pattern, d)
         return ChainScraper.set_pattern_store(store_id, pattern)
 
     @staticmethod
-    def get_stores_pattern(date=None):
-        if date:
-            return ChainScraper.set_pattern_date(stores_file_pattern, date)
+    def get_stores_pattern(d=None):
+        if d:
+            return ChainScraper.set_pattern_date(stores_file_pattern, d)
         else:
             return stores_file_pattern
 
-    def get_stores_xml(self, date=None):
+    def get_stores_xml(self, d=None):
         """
         get stores xml and return path to the downloaded file
 
@@ -330,20 +331,20 @@ class ChainScraper(object):
             str: path to downloaded file
         """
         pattern = stores_file_pattern
-        if date is not None:
-            pattern = self.set_pattern_date(pattern, date=date)
+        if d is not None:
+            pattern = self.set_pattern_date(pattern, d)
 
-        paths = self.download_files_by_pattern(pattern, date)
+        paths = self.download_files_by_pattern(pattern, d)
         return paths[0]
 
     def get_today_timestamp(self):
-        return self.get_date_timestamp(datetime.today())
+        return self.get_date_timestamp(date.today())
 
-    def get_date_timestamp(self, date=None):
-        date = date or datetime.today()
-        return '{:04}{:02}{:02}'.format(date.year, date.month, date.day)
+    def get_date_timestamp(self, d=None):
+        d = d or date.today()
+        return '{:04}{:02}{:02}'.format(d.year, d.month, d.day)
 
-    def get_prices_xml(self, store_id, pattern=price_file_pattern, date=None):
+    def get_prices_xml(self, store_id, pattern=price_file_pattern, d=None):
         """
         download specific prices xml(.gz)
         Args:
@@ -354,9 +355,9 @@ class ChainScraper(object):
         """
         pattern = self.set_pattern_store(store_id, pattern)
         try:
-            return self.download_files_by_pattern(pattern, date)[0]
+            return self.download_files_by_pattern(pattern, d)[0]
         except IndexError:
-            self.logger.warn("Can't find xml for store {}".format(store_id))
+            logger.warn("Can't find xml for store {}".format(store_id))
             # raise MissingFileException("Can't find xml for store {}".format(store_id))
 
     def get_promos_xml(self, store_id):
@@ -397,7 +398,7 @@ class Shufersal(ChainScraper):
         some_file = page.find('td', text=re.compile('Price')).string
         return some_file.split('-')[0][re.search('\d', some_file).start():]
 
-    def get_stores_xml(self, date=None):
+    def get_stores_xml(self, d=None):
         page = bs_parse_url(self.url)
         last_page_url = page.find('a', text='>>')['href']
         last_page = bs_parse_url(self.url + last_page_url)
@@ -407,11 +408,11 @@ class Shufersal(ChainScraper):
         file_path = os.path.join(self.get_chain_folder(), file_path)
         return self.download_url_to_path(url, file_path)
 
-    def download_all_data(self, date=None):
+    def download_all_data(self, d=None):
         # TODO: not implemented correctly!!!
         self.download_files_by_pattern(pattern=full_file_pattern)
 
-    def get_prices_xml(self, store_id, pattern=price_file_pattern, date=None):
+    def get_prices_xml(self, store_id, pattern=price_file_pattern, d=None):
         matches = list(filter(None.__ne__, [pattern.match(f) for f in os.listdir(self.get_chain_folder())]))
         files = [m.string for m in matches if
                  int(m.group('store')) == int(store_id) and
@@ -428,7 +429,7 @@ class Shufersal(ChainScraper):
             return self.download_url_to_path(url, file_path)
         return file_path
 
-    def download_files_by_pattern(self, pattern=file_pattern, date=None):
+    def download_files_by_pattern(self, pattern=file_pattern, d=None):
         # import multiprocessing
         file_paths = []
         page = bs_parse_url(self.url)
@@ -495,10 +496,10 @@ class PublishedpricesDatabase(ChainScraper):
             if m:
                 return m.group('id')
 
-    def download_all_data(self, date=None):
+    def download_all_data(self, d=None):
         return self.download_files_by_pattern()
 
-    def download_files_by_pattern(self, pattern=full_file_pattern, date=None):
+    def download_files_by_pattern(self, pattern=full_file_pattern, d=None):
         folder = self.get_chain_folder()
         body = 'iDisplayLength=10000'  # this number will define the number of file results that we will get
         res = self.session.post(self.base_url + '/file/ajax_dir', data=body)
@@ -527,10 +528,10 @@ class Nibit(ChainScraper):
             if cells and cells[1].text == self.name:  # column [1] is the chain name
                 return file_pattern.match(cells[0].text).group('id')
 
-    def download_all_data(self, date=None):
-        self.download_files_by_pattern(file_pattern, date) # TODO is date supported for matrixcatalog?
+    def download_all_data(self, d=None):
+        self.download_files_by_pattern(file_pattern, d) # TODO is date supported for matrixcatalog?
 
-    def download_files_by_pattern(self, pattern=file_pattern, date=None):
+    def download_files_by_pattern(self, pattern=file_pattern, d=None):
         page = bs_parse_url(self.url)
         file_paths = []
         for tr in page.find('table').find_all('tr'):
@@ -558,13 +559,13 @@ class Mega(ChainScraper):
             if file_pattern.match(a.text):
                 return file_pattern.match(a.text).group('id')
 
-    def download_all_data(self, date=None):
-        self.download_files_by_pattern(date=date)
+    def download_all_data(self, d=None):
+        self.download_files_by_pattern(d=d)
 
-    def download_files_by_pattern(self, pattern=full_file_pattern, date=None):
-        url = self.url + self.get_date_timestamp(date)
+    def download_files_by_pattern(self, pattern=full_file_pattern, d=None):
+        url = self.url + self.get_date_timestamp(d)
         soup = bs_parse_url(url)
-        folder_path = os.path.join(self.get_chain_folder(), self.get_date_timestamp(date))
+        folder_path = os.path.join(self.get_chain_folder(), self.get_date_timestamp(d))
         if not os.path.exists(folder_path):
             os.makedirs(folder_path)
 
@@ -593,13 +594,13 @@ class ZolVebegadol(ChainScraper):
             if file_pattern.match(a.text):
                 return file_pattern.match(a.text).group('id')
 
-    def download_all_data(self, date=None):
+    def download_all_data(self, d=None):
         return self.download_files_by_pattern()
 
-    def download_files_by_pattern(self, pattern=full_file_pattern, date=None):
-        url = self.url + self.get_date_timestamp(date) + '/gz/'
+    def download_files_by_pattern(self, pattern=full_file_pattern, d=None):
+        url = self.url + self.get_date_timestamp(d) + '/gz/'
         soup = bs_parse_url(url)
-        folder_path = os.path.join(self.get_chain_folder(), self.get_date_timestamp(date))
+        folder_path = os.path.join(self.get_chain_folder(), self.get_date_timestamp(d))
         if not os.path.exists(folder_path):
             os.makedirs(folder_path)
 
@@ -625,7 +626,7 @@ class Bitan(ChainScraper):
             if m:
                 return m.group('id')
 
-    def download_files_by_pattern(self, pattern=full_file_pattern, date=None):
+    def download_files_by_pattern(self, pattern=full_file_pattern, d=None):
         folder = self.get_chain_folder()
         file_paths = []
         page = bs_parse_url(self.url)
@@ -649,15 +650,15 @@ class Coop(ChainScraper):
         name = self.get_stores_xml()
         return file_pattern.match(name).group('id')
 
-    def get_stores_xml(self, date=None):
-        if date is not None: #or date != datetime.date
-            self.logger.warn("Coop doesn't support older dates!")
+    def get_stores_xml(self, d=None):
+        if d is not None: #or date != datetime.date
+            logger.warn("Coop doesn't support older dates!")
         res = self.session.post(self.url + 'branches_to_xml')
         if not res.ok:
             return  # error
         return self.save_res_to_file(res)
 
-    def get_prices_xml(self, store_id, pattern=price_file_pattern, date=None):
+    def get_prices_xml(self, store_id, pattern=price_file_pattern, d=None):
         params = {
             'product': '0',
             'branch': str(store_id),
@@ -683,6 +684,7 @@ class Coop(ChainScraper):
             for block in res.iter_content(1024*1000):
                 f.write(block)
         return file_path
+
 
 def main():
     try:
