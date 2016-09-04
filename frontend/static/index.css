@@ -1,0 +1,38 @@
+
+.city {
+    position: absolute;
+    right: 10%;
+}
+
+.stores {
+    position: absolute;
+    right: 20%;
+}
+
+.ui-widget {
+    position: absolute;
+    right: 40%;
+}
+
+.basket {
+    position: absolute;
+    right: 70%;
+}
+
+.list {
+  font-family:sans-serif;
+  /*margin:0;*/
+  padding:5px 0 0;
+}
+.list > li {
+  /*display:block;*/
+  /*background-color: #eee;*/
+  padding:5px;
+  box-shadow: inset 0 1px 0 #fff;
+}
+h3 {
+  font-size: 16px;
+  margin:0 0 0.3rem;
+  font-weight: normal;
+  font-weight:bold;
+}

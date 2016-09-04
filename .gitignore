@@ -16,9 +16,10 @@ env/
 *.xml
 *.gz
 *.zip
-
+*.TXT
 # profiling files
 *.prof
 
 #*.db
 
+*.T

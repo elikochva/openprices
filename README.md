@@ -24,15 +24,17 @@ This should allow answering questions like (but not limited to):
 DB schema
 =========
 
-# TODO: add detailed description on how the schema is defined
+    TODO: add detailed description on how the schema is defined
 
 nomenclature
 ------------
 
 product (StoreProduct):
+
     Each product that appear in some store at some point of time, is considered product of this store.
     That means that same product in different stores will have different product id.
     e.g.:
+    
      1) kg of Sugar (by Sugat) may have different names in different stores, but have same barcode.
      2) fresh tomatoes may be called 'עגבניות במשקל' in one store, and 'עגבניות חממה' in another, and also - may have
      different barcode in each store.
@@ -40,6 +42,7 @@ product (StoreProduct):
      in both cases, these products will be considered different products.
 
 item (Item):
+
     item is a unique single description of actual product.
     Thus, kg Sugar (by Sugat) will have only 1 appearance in items table.
     And the same for a kg of fresh tomatoes.
@@ -47,6 +50,7 @@ item (Item):
 
 TODO
 ====
+
 0) all TODOs in code...
 
 1) data issues:
@@ -113,11 +117,13 @@ TODO
 
 Code dependencies:
 ==================
+
 * python 3 - probably will run on 2.7 also assuming all other dependencies are met...
 * see requirements.txt (pip install -r requirements.txt)
 
 
 online resources:
-===================
+=================
+
 1) http://www.economy.gov.il/Trade/ConsumerProtection/Instructions/DocLib/O2015004355.pdf
 2) http://www.justice.gov.il/SitePages/OpenFile.aspx?d=6e912Mdhgu5lbUUjdGs76H4rsi6rJKBB7ODCgudMdlQ%3d

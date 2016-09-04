@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <script type=text/javascript src="{{ url_for('static', filename='jquery.js') }}"></script>
+    <script type=text/javascript src="{{ url_for('static', filename='jquery-ui-1.12.0/jquery-ui.js') }}"></script>
+    <script type=text/javascript>
+        $SCRIPT_ROOT = {{ request.script_root|tojson|safe }};
+    </script>
+    <script type=text/javascript src="{{ url_for('static', filename='shop_planner.js') }}"></script>
+    <script type=text/javascript src="{{ url_for('static', filename='list.js') }}"></script>
+    <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='index.css') }}"/>
+    <meta charset="UTF-8">
+    <title>השוואת מחירים</title>
+</head>
+<body>
+<div class="city">
+    <form id="city_form">
+        <select id="city_select">
+            {% for city in cities %}
+                <option id="{{ city }}">{{ city }}</option>
+            {% endfor %}
+        </select>
+    </form>
+</div>
+<div class="stores">
+    <form id="stores_form">
+    </form>
+</div>
+<div class="ui-widget">
+    <label for="search">Item Name</label>
+    <input name="search" type="search" id="search">
+</div>
+
+<div id="basket">
+    <ul class="list">
+    </ul>
+    <input id="total" disabled="disabled"/>
+</div>
+<script>
+    var options = {
+        valueNames: ['name', 'value'],
+        item: '<li><h5 class="name"></h5><h5 class="value" hidden></h5></li>'
+    };
+    var productList = new List('basket', options);
+    var removeBtns = $('.remove-item-btn'); //TODO implement
+</script>
+
+</body>
+</html>
