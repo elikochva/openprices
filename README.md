@@ -77,7 +77,7 @@ TODO
     - seems like the list comprehensions checks are taking too much time
     - maybe can use more memory in some way?
     - also - reduce db committing (think hard on what commits can be omitted from the flow (maybe need only the last one)
-    - multi threaded solution for web access (download and parsing)
+    - ~~multi threaded solution for web access (download and parsing) ~~ Done:via command line args to main.py
 
 4) UI:
 

@@ -23,3 +23,8 @@ env/
 #*.db
 
 *.T
+backend/shopping.db
+backend/shopping.db-journal
+*.log
+schemaSpy_5.0.0.jar
+*.jar

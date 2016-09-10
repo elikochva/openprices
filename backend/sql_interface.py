@@ -3,7 +3,7 @@ import logging
 from enum import Enum
 # from datetime import datetime
 import datetime
-from sqlalchemy import create_engine, or_, and_
+from sqlalchemy import create_engine, or_, and_, select
 from sqlalchemy.ext.declarative import declarative_base, declared_attr
 from sqlalchemy import Column, Integer, BigInteger, String, ForeignKey, Date, DECIMAL, Text,\
     exists, UniqueConstraint, Boolean, func
@@ -170,8 +170,8 @@ class StoreProduct(Base):
     __tablename__ = 'store_products'
 
     id = Column(BigInteger, primary_key=True)
-    item_id = Column(BigInteger, ForeignKey(Item.id), nullable=True)
-    store_id = Column(BigInteger, ForeignKey(Store.id))
+    item_id = Column(BigInteger, ForeignKey(Item.id), nullable=True, index=True)
+    store_id = Column(BigInteger, ForeignKey(Store.id), index=True)
     code = Column(BigInteger)
     external = Column(Boolean)
     name = Column(Text)
@@ -208,7 +208,7 @@ class PriceHistory(Base):
     __tablename__ = 'price_history'
 
     id = Column(BigInteger, primary_key=True)
-    store_product_id = Column(BigInteger, ForeignKey(StoreProduct.id))
+    store_product_id = Column(BigInteger, ForeignKey(StoreProduct.id), index=True)
     start_date = Column(Date, default=datetime.date.today, index=True)
     end_date = Column(Date, default=None, index=True) # None means current
     price = Column(DECIMAL(precision=10, scale=2))
@@ -224,7 +224,7 @@ class CurrentPrice(Base):
     __tablename__ = 'current_price'
 
     store_product_id = Column(BigInteger, ForeignKey(StoreProduct.id), primary_key=True)
-    price = Column(DECIMAL(precision=10, scale=2), index=True)
+    price = Column(DECIMAL(precision=10, scale=2))
 
     UniqueConstraint(store_product_id)
 
@@ -247,7 +247,7 @@ class Promotion(Base):
     __tablename__ = 'promotions'
 
     id = Column(BigInteger, primary_key=True) #, autoincrement=True)
-    store_id = Column(BigInteger, ForeignKey(Store.id))
+    store_id = Column(BigInteger, ForeignKey(Store.id), index=True)
     internal_promotion_code = Column(BigInteger)
     description = Column(Text)
     start_date = Column(Date, default=datetime.date.today)

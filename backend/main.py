@@ -36,6 +36,7 @@ def parse_chain_prices(chain, store):
     except BaseException as e:
         print(e)
 
+
 def main():
     arg_parser = argparse.ArgumentParser()
     arg_parser.add_argument('--processes', '-p', help='run data scraping and parsing in X parallel processes', default=1, type=int)
@@ -46,8 +47,6 @@ def main():
 
     args = arg_parser.parse_args()
 
-    print(args)
-    return
     start = time.time()
     p = Pool(processes=args.processes)
     db = SessionController()

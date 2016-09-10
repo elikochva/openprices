@@ -211,24 +211,19 @@ class ChainXmlParser(object):
         # TODO this unction assumes all global items are correctly marked as such in the files
         # and that no internal item is marked as global (which is far fetched assumption... :(
         page_size = 100000
-        product_groups = db.query(StoreProduct).filter(StoreProduct.external == True). \
-            filter(StoreProduct.item_id == None).group_by(StoreProduct.code).yield_per(page_size)
+        products = db.query(StoreProduct).filter(StoreProduct.external == True). \
+            filter(StoreProduct.item_id == None).yield_per(page_size)
 
         item_codes_ids = dict(db.query(Item.code, Item.id).yield_per(page_size))
-        for product_group in product_groups:
-            if isinstance(product_group, list):
-                code = product_group[0].code
-                length = len(product_group)
-                item_id = item_codes_ids[code]
-                db.bulk_update(StoreProduct,  # TODO: Am I using it correctly???? no!!!
-                               dict(
-                                   zip(product_group, [item_id] * length)
-                               )
-                               )
-            else:
-                code = product_group.code
-                item_id = item_codes_ids[code]
-                product_group.item_id = item_id
+        i = 0
+        for product in products:
+            code = product.code
+            item_id = item_codes_ids[code]
+            product.item_id = item_id
+            i += 1
+            if not i % 10000:
+                print('flushing ', i)
+                db.session.flush()
 
         db.commit()
 
@@ -686,15 +681,16 @@ class ChainXmlParser(object):
 
 def main():
     db = SessionController(db_logging=False)
+    #
+    # for chain in db.query(Chain):
+    #     if chain.name != 'סופר דוש': continue
+    #     parser = ChainXmlParser(chain, db)
+    #     for store in db.query(Store).filter(Store.chain_id == chain.id):
+    #         parser.parse_store_promos(store)
+    #         break
+    #     # break
 
-    for chain in db.query(Chain):
-        if chain.name != 'סופר דוש': continue
-        parser = ChainXmlParser(chain, db)
-        for store in db.query(Store).filter(Store.chain_id == chain.id):
-            parser.parse_store_promos(store)
-            break
-        # break
-
+    ChainXmlParser.set_products_item_id(db)
 
 if __name__ == '__main__':
     main()

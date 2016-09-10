@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import logging
 from datetime import date
-from sql_interface import Chain, Store, Item, CurrentPrice, PriceHistory, SessionController, StoreProduct
+from sql_interface import Chain, Store, Item, CurrentPrice, PriceHistory, SessionController, StoreProduct, or_
 import xml_parser
 
 logging.basicConfig(level=logging.INFO)
@@ -156,10 +156,6 @@ class UI(object):
         q = self.db.query(Store)
         return self.db.filter_or(q, [Store.city == city, Store.name.contains(city)]).all()
 
-    def get_city_stores_json(self, city):
-        stores = self.get_city_stores(city)
-        return [(store.id, store.chain.name, store.name) for store in stores]
-
     def get_current_products(self, store):
         """
         get list of all items in store
@@ -198,58 +194,145 @@ class UI(object):
             Item.name.like('{}%'.format(partial_name))).all()  # .yield_per(self.page_size)
         # TODO: is Item.name.contains has better performance?
 
-    # TODO need to use CurrentPrice table...
     def get_store_products_by_name(self, name, store_id):
-        q = self.db.query(Item).filter(StoreProduct.store_id == store_id).filter(Item.name.like('{}%'.format(name)))
+        q = self.db.query(StoreProduct).filter(StoreProduct.store_id == store_id).filter(
+            Item.name.like('{}%'.format(name)))
         return q.limit(10).all()  # yield_per(self.page_size) # TODO
 
-    def get_store_current_products_by_name(self, name, store_id):
-        q = self.db.query(Item).join(StoreProduct).join(CurrentPrice) \
-            .filter(Item.name.like('{}%'.format(name)))
-            # .filter(StoreProduct.store_id == store_id)\
+    def get_store_current_products_by_name(self, name, store_id, limit=None):
+        q = self.db.query(StoreProduct).join(CurrentPrice) \
+            .filter(StoreProduct.store_id == store_id) \
+            .filter(StoreProduct.name.like('{}%'.format(name)))
+        return q.limit(limit) if limit else q.all()
 
-        return q.limit(5)#all()
+    def get_stores_current_items_by_name(self, name, store_ids, limit=None):
+        if not store_ids:
+            return # TODO...
 
-    def get_store_items_by_name_json(self, name, store_id):
-        products = self.get_store_products_by_name(name, store_id)
-        # return [(product.name, product.id) for product in products]
-        return [{'label': product.name, 'value': product.id} for product in products]
+        stores_cond = [StoreProduct.store_id == store_id for store_id in store_ids]
+        q = self.db.query(Item).join(StoreProduct).join(CurrentPrice)
+        q = self.db.filter_or(q, stores_cond)
+        q = q.filter(Item.name.like('{}%'.format(name)))
+        return q.limit(limit).all() if limit else q.all()
 
-    def get_totals_json(self, product_ids):
-        """
-        assuming list of product ids
-        Args:
-            product_ids:
-
-        Returns:
-
-        """
-        q = self.db.query(CurrentPrice)
-    def get_item_from_code(self, item_code):
+    def get_item_by_code(self, item_code):
         return self.db.query(Item).filter(Item.code == item_code).one()
 
-    def get_item_products(self, item):
+    def get_item_by_id(self, item_id):
+        return self.db.query(Item).filter(Item.id == item_id).one()
+
+    def get_store_by_id(self, store_id):
+        return self.get_stores_by_ids([store_id])[0]
+
+    def get_stores_by_ids(self, stores_ids):
+        stores_ids = map(int, stores_ids)
+        q = self.db.query(Store)
+        conds = [Store.id == store_id for store_id in stores_ids]
+        return self.db.filter_or(q, conds).all()
+
+    def item2products(self, item, stores=None):
         """
         get all store products that are linked to given item
 
         Args:
             item:
+            stores: optional. filter by list of store ids
+        Returns:
+
+        """
+        q = self.db.query(StoreProduct)
+        if stores is not None:
+            conds = [StoreProduct.store_id == store.id for store in stores]
+            q = self.db.filter_or(q, conds)
+        return q.filter(StoreProduct.item_id == item.id).yield_per(self.page_size)
+
+    def item2current_products(self, item, stores=None):
+        """
+        get all store products that are linked to given item
+
+        Args:
+            item:
+            stores: optional. filter by list of store ids
+        Returns:
+
+        """
+        q = self.db.query(CurrentPrice).join(StoreProduct)
+        if stores is not None:
+            conds = [StoreProduct.store_id == store.id for store in stores]
+            q = self.db.filter_or(q, conds)
+        return q.filter(StoreProduct.item_id == item.id).limit(10).all()  # yield_per(self.page_size)
+
+    def item2history_products(self, item, stores=None):
+        """
+        get all store products that are linked to given item
+
+        Args:
+            item:
+            stores: optional. filter by list of store ids
+        Returns:
+
+        """
+        q = self.db.query(PriceHistory).join(StoreProduct)
+        if stores is not None:
+            conds = [StoreProduct.store_id == store.id for store in stores]
+            q = self.db.filter_or(q, conds)
+        return q.filter(StoreProduct.item_id == item.id).order_by(PriceHistory.store_product_id).all()  # yield_per(self.page_size)
+
+    def product2item(self, store_product):
+        """
+        get Item from StoreProduct
+        Args:
+            store_product:
 
         Returns:
 
         """
-        return self.db.query(StoreProduct).filter(StoreProduct.item_id == item.id).yield_per(self.page_size)
+        if store_product.external:
+            return self.db.query(Item).filter(Item.code == store_product.code).one()
+        else:
+            # try:  TODO add handling
+            return self.db.query(Item).filter(Item.id == store_product.item_id).one()
+            # except
+
+    def products2items(self, products):
+        """
+        get list of Items corresponding to list of StoreProducts
+        Args:
+            products:
+
+        Returns:
+
+        """
+        if products:
+            q = self.db.query(Item)
+            conditions = [Item.code == p.code if p.is_external() else Item.id == p.item_id for p in products]
+            return self.db.filter_or(q, conditions).all()
+
+    def get_product_store(self, product):
+        """
+        return the Store the product belongs to
+        Args:
+            store_product:
+
+        Returns:
+
+        """
+        return self.db.query(Store).filter(Store.id == product.store_id).one()
 
 
-def find_products_with_history(db):
-    return db.query(PriceHistory).filter(PriceHistory.end_date != None).limit(2).all()
+def find_products_with_history(db, stores=None):
+    q = db.query(PriceHistory)
+    if stores:
+        q = db.filter_or(q, [Store.id == store.id for store in stores])
+    else:
+        return q.filter(PriceHistory.end_date != None).limit(10).all()
 
 
 def print_list(lst):
     # return
     for i in lst:
         print(i)
-    print('')
+    print(len(lst))
 
 
 if __name__ == '__main__':
@@ -283,8 +366,8 @@ if __name__ == '__main__':
     # history = ui.get_product_history(stores_sugar[0])
     # print_list(history)
 
-    # products_with_history = find_products_with_history(ui.db)
-    # print_list(products_with_history )
+    products_with_history = find_products_with_history(ui.db)
+    print_list(products_with_history )
     # # products_with_history.store_products
     # for p in products_with_history:
     #     h = ui.get_product_history(p)
@@ -296,5 +379,16 @@ if __name__ == '__main__':
     # for store in stores:
     #     print_list(planner.get_store_items(store))
 
-    items = ui.get_store_current_products_by_name('חלב', 1)
+    # products = ui.get_store_current_products_by_name('מלפפון', 1)
+    # print_list(products)
+
+    stores = [ui.get_store_by_id(i) for i in range(58, 112)]
+    items = ui.get_stores_current_items_by_name('משחת', [store.id for store in stores])
     print_list(items)
+    # items = ui.products2items(products)
+    # print_list(items)
+    #
+    item = items[0]
+    print(item.code, item.id)
+    temp = ui.item2history_products(items[1], stores)
+    print_list(temp)

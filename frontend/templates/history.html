@@ -6,12 +6,12 @@
     <script type=text/javascript>
         $SCRIPT_ROOT = {{ request.script_root|tojson|safe }};
     </script>
-    <script type=text/javascript src="{{ url_for('static', filename='shop_planner.js') }}"></script>
-{#    <script type=text/javascript src="{{ url_for('static', filename='list.js') }}"></script>#}
-    <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='index.css') }}"/>
+    <script type=text/javascript src="{{ url_for('static', filename='price_history.js') }}"></script>
+    <script type=text/javascript src="{{ url_for('static', filename='Chart.bundle.js') }}"></script>
+    <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='history.css') }}"/>
     <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='jquery-ui.css') }}"/>
     <meta charset="UTF-8">
-    <title>השוואת מחירים</title>
+    <title>היסטוריית מחירים</title>
 </head>
 <body>
 <div id="top">
@@ -35,7 +35,8 @@
 </div>
 
 <div id="bottom">
-    <div id="basket">
+    <div id="chart">
+        <canvas id="myChart" width="400" height="400"></canvas>
     </div>
 </div>
 </body>
