@@ -3,7 +3,7 @@ from datetime import date
 import sys, os
 
 sys.path.append(os.path.join(os.path.dirname(os.path.relpath(__file__)), '../backend'))
-from backend.ui import UI
+from backend.ui import UI, SessionController
 from backend.ui import ShopPlanner
 from flask import Flask, request, session, render_template, jsonify
 
@@ -23,13 +23,10 @@ def timing(func):
 app = Flask(__name__)
 app.config.from_object(__name__)
 # app.debug = True
+
+# db = UI(SessionController('sqlite:///C:/Users/eli/python projects/shopping/backend/test.db'))
 db = UI()
 shop_planner = None
-
-
-@app.route('/')
-def index():
-    return render_template('index.html', cities=db.get_cities())
 
 
 @timing
@@ -57,13 +54,6 @@ def item2stores_products(item_id, stores_ids):
                     'price': float(p.price),
                     'store_id': p.store_product.store_id,
                 } for p in products]
-    else:
-        return [{  # TODO very slow because of joins, need to be done at the query level
-                    'id': item_id,
-                    'name': item.name,
-                    'price': '',
-                    'store_id': store_id,
-                } for store_id in stores_ids]
 
 
 @timing
@@ -91,6 +81,12 @@ def get_product_price_history(price_history_list):
     data.sort(key=lambda x: x[0])
     data = [(time.mktime(d[0].timetuple())*1000, d[1]) for d in data]
     return data
+
+
+@app.route('/compare')
+def index():
+    return render_template('index.html', cities=db.get_cities())
+
 
 
 @timing
@@ -135,4 +131,4 @@ def item_history():
 
 
 if __name__ == '__main__':
-    app.run(threaded=True)
+    app.run(threaded=False)

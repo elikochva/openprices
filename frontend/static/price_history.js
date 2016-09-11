@@ -40,12 +40,32 @@ $(function item_autocomplete() {
             autoFocus: true,
 
             source: function (request, response) {
+                var term = request.term,
+                    key_splitter = "XXX",
+                    selected_stores = get_selected_stores_ids().toString(),
+                    element = this.element,
+                    cache = element.data('autocompleteCache') || {},
+                    foundInCache = false;
+
+                $.each(cache, function (key, data) {
+                    var key_term = key.split(key_splitter)[0],
+                        stores = key.split(key_splitter)[1];
+                    if (term.indexOf(key_term) === 0 && stores == selected_stores && data.items.length > 0) {
+                        response(data.items);
+                        foundInCache = true;
+                        return;
+                    }
+                });
+                if (foundInCache) return;
+
                 $.getJSON($SCRIPT_ROOT + '/_search',
                     {
                         search: request.term,
-                        stores_ids: get_stores_ids()
+                        stores_ids: get_selected_stores_ids()
                     },
                     function (data) {
+                        cache[term + key_splitter + selected_stores.toString()] = data;
+                        element.data('autocompleteCache', cache);
                         response(data.items);
                     }
                 );
@@ -56,7 +76,7 @@ $(function item_autocomplete() {
                 $.getJSON($SCRIPT_ROOT + '/_get_item_history',
                     {
                         item_id: ui.item.value,
-                        stores_ids: get_stores_ids()
+                        stores_ids: get_selected_stores_ids()
                     },
                     function (response) {
                         /* response.products is:
@@ -98,6 +118,7 @@ function chart_history(products) {
             showLine: true,
             pointRadius: 5,
             borderColor: getRandomColor(),
+            lineTension: 0,
         });
     }
     var ctx = $("#myChart");
@@ -141,4 +162,12 @@ function getRandomColor() {
         color += letters[Math.floor(Math.random() * 16)];
     }
     return color;
+}
+
+function get_selected_stores_ids() {
+    var ids = [];
+    $('input:checkbox[name="store"]:checked').each(function () {
+        ids.push(parseInt($(this).attr('id')));
+    });
+    return ids;
 }

@@ -161,7 +161,7 @@ class ChainXmlParser(object):
             self.db.bulk_insert(new_stores)
             self.db.commit()
 
-    def get_items_prices(self, store, prices_xml):
+    def get_products_prices(self, store, prices_xml):
         """
         Parse prices xml and return all items in it in a dictionary of Item: price
         Args:
@@ -278,7 +278,7 @@ class ChainXmlParser(object):
             logger.warn("Missing prices xml for {}!".format(store))
             return
         # get all products from the file
-        products_prices = self.get_items_prices(store, prices_xml)
+        products_prices = self.get_products_prices(store, prices_xml)
 
         # 1) add new items to main items table
         self.add_new_items(products_prices)
@@ -289,12 +289,13 @@ class ChainXmlParser(object):
         self.db.flush()  # need to commit in order to assign ids to Items and StoreProducts #TODO maybe session.flush?
 
         # 3) update price history table
-        self.update_history_table(store, products_prices)
+        self.update_history_table(store, products_prices, file_date)
 
         self.db.flush()  # commit needed for next step
 
         # update current prices table
-        self.update_current_prices(store)
+        if file_date == date.today():
+            self.update_current_prices(store)
         self.db.commit()  # finally - commit everything ot DB
 
     def add_new_items(self, products_prices):
@@ -337,10 +338,10 @@ class ChainXmlParser(object):
             logger.info('adding new store products to store products table ({})'.format(len(new_products)))
             self.db.bulk_insert(new_products)
 
-    def update_history_table(self, store, products_prices):
+    def update_history_table(self, store, products_prices, file_date):
         """
         Update price history table to include the changes that new parsing had found.
-
+        assuming files with dates are parsed in order of dates
         see comments in code for full flow description.
 
         Args:
@@ -369,7 +370,7 @@ class ChainXmlParser(object):
         # we have 3 different stages here
 
         # 1) add items that don't have current price (new items, or that were out of store)
-        new_products = [PriceHistory(store_product_id=product.id, price=products_prices[product])
+        new_products = [PriceHistory(store_product_id=product.id, price=products_prices[product], start_date=file_date)
                         for product in products_prices if product.id not in all_products_ids]
         if new_products:
             logger.info('Adding {} new items (no current price) to history table'.format(len(new_products)))
@@ -384,7 +385,7 @@ class ChainXmlParser(object):
                         format(len(removed_from_store)))
             for item in removed_from_store:  # TODO bulk_update
                 # update end_date to yesterday # TODO (or for today?)
-                item.end_date = date.today() - timedelta(days=1)
+                item.end_date = file_date - timedelta(days=1)
 
         # 3) items that need to update their current price:
         # all items with end_date == None and also appear in db_products_prices are possible candidates for this.
@@ -402,7 +403,7 @@ class ChainXmlParser(object):
 
         updated_products_ids = set(p.id for p in updated_parsed_products)
 
-        new_prices = [PriceHistory(store_product_id=product.id, price=products_prices[product])
+        new_prices = [PriceHistory(store_product_id=product.id, price=products_prices[product], start_date=file_date)
                       for product in updated_parsed_products]
 
         if new_prices:
@@ -417,7 +418,7 @@ class ChainXmlParser(object):
             logger.info('Updating end_date to yesterday for all items that have new price ({})'.
                         format(len(history_updated_products)))
             for item in history_updated_products:  # TODO bulk update
-                item.end_date = date.today() - timedelta(days=1)
+                item.end_date = file_date - timedelta(days=1)
 
     def update_current_prices(self, store):
         """
@@ -680,7 +681,7 @@ class ChainXmlParser(object):
 
 
 def main():
-    db = SessionController(db_logging=False)
+    db = SessionController(db_path='sqlite:///C:/Users/eli/python projects/shopping/backend/test.db', db_logging=False)  #
     #
     # for chain in db.query(Chain):
     #     if chain.name != 'סופר דוש': continue
@@ -690,7 +691,17 @@ def main():
     #         break
     #     # break
 
-    ChainXmlParser.set_products_item_id(db)
+
+    store = db.query(Store).filter(Store.name.contains('מב. גני אביב לוד')).one()
+    chain = db.query(Chain).filter(Chain.id == store.chain_id).one()
+    parser = ChainXmlParser(chain, db)
+    # f = parser.get_prices_file(store, d)
+    for i in reversed(range(200)):
+        d = date.today() - timedelta(days=i)
+        parser.parse_store_prices(store, d)
+    # prices = parser.get_products_prices(store, f)
+    # print(prices)
+    # parser.get_products_prices()
 
 if __name__ == '__main__':
     main()

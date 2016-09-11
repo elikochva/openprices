@@ -4,7 +4,7 @@
 
 $(document).on('click', '.remove-item-btn', function () {
     var tr = $(this).closest('tr');
-    var item_id = tr.find('.product_id').text();
+    var item_id = tr.find('.item_id').text();
     //TODO update totals price
     var item_count = get_item_count(item_id); //TODO do we need funciton here?
     $.each(basket_stores_ids(), function (index, store_id) {
@@ -17,7 +17,7 @@ $(document).on('click', '.remove-item-btn', function () {
 
 $(document).ready(function () {
     city_autocomplete();
-    init_table();
+    init_basket();
 });
 
 $(function () {
@@ -28,7 +28,7 @@ $(function () {
 
 $(function () {
     $('#stores_form').on('change', 'input:checkbox[name="store"]', (function () {
-            var store_data = get_store_id_name(this);
+            var store_data = get_selected_store_id_name(this);
             if (this.checked) {
                 add_basket_store(store_data['id'], store_data['name']);
             }
@@ -61,14 +61,18 @@ function city_autocomplete() {  //TODO change to autocomplete instead of regular
 $(function item_autocomplete() {
     $('#search').autocomplete({
             source: function (request, response) {
-                var term = request.term.toLowerCase(),
+                var term = request.term,
+                    key_splitter = "XXX",
+                    selected_stores = get_selected_stores_ids().toString(),
                     element = this.element,
-                    cache = this.element.data('autocompleteCache') || {},
+                    cache = element.data('autocompleteCache') || {},
                     foundInCache = false;
 
                 $.each(cache, function (key, data) {
-                    if (term.indexOf(key) === 0 && data.length > 0) {
-                        response(data);
+                    var key_term = key.split(key_splitter)[0],
+                        stores = key.split(key_splitter)[1];
+                    if (term.indexOf(key_term) === 0 && stores == selected_stores && data.items.length > 0) {
+                        response(data.items);
                         foundInCache = true;
                         return;
                     }
@@ -78,10 +82,10 @@ $(function item_autocomplete() {
                 $.getJSON($SCRIPT_ROOT + '/_search',
                     {
                         search: request.term,
-                        stores_ids: get_stores_ids()
+                        stores_ids: get_selected_stores_ids()
                     },
                     function (data) {
-                        cache[term] = data;
+                        cache[term + key_splitter + selected_stores.toString()] = data;
                         element.data('autocompleteCache', cache);
                         response(data.items);
                     }
@@ -93,7 +97,7 @@ $(function item_autocomplete() {
                 $.getJSON($SCRIPT_ROOT + '/_add_item',
                     {
                         item_id: ui.item.value,
-                        stores_ids: get_stores_ids()
+                        stores_ids: get_selected_stores_ids()
                     },
                     function (response) {
                         /* response.products is:
@@ -116,7 +120,7 @@ $(function item_autocomplete() {
     );
 });
 
-function get_stores_ids() {
+function get_selected_stores_ids() {
     var ids = [];
     $('input:checkbox[name="store"]:checked').each(function () {
         ids.push(parseInt($(this).attr('id')));
@@ -124,7 +128,7 @@ function get_stores_ids() {
     return ids;
 }
 
-function get_store_names() {
+function get_selected_stores_names() {
     var names = [];
     $('input:checkbox[name="store"]:checked').each(function () {
         names.push($('label[for="' + this.id + '"]').text());
@@ -132,22 +136,21 @@ function get_store_names() {
     return names;
 }
 
-function get_stores_ids_names() {
+function get_selected_stores_ids_names() {
     var res = [];
     $('input:checkbox[name="store"]:checked').each(function () {
-        res.push(get_store_id_name(this));
+        res.push(get_selected_store_id_name(this));
     });
     return res;
 }
 
-function get_store_id_name(checkbox) {
+function get_selected_store_id_name(checkbox) {
     return {
         'id': parseInt(checkbox.id),
         'name': $('label[for="' + checkbox.id + '"]').text()
     }
 }
-//TODO funciton for adding item to specific store baskst
-//add_item_to_store_basket(store, item, price, count)
+
 function add_item_to_basket(data) {
     var item_id = data[0]['id'],
         item_name = data[0]['name'];
@@ -155,20 +158,20 @@ function add_item_to_basket(data) {
     $('table').show();
     var tbody = $('#basket>>tbody');
     if (!tbody.length) {
-        tbody = init_table();
+        tbody = init_basket();
     }
     // loop over all active stores
     if (!is_basket_item_exists(item_id)) {
         var tr = $('<tr>');
-        for (var i = 0; i < get_stores_ids().length; i++) { //fill up row with empty cells
+        for (var i = 0; i < get_selected_stores_ids().length; i++) { //fill up row with empty cells
             tr.append('<td class="product_price"></td>');
         }
 
         tr.append('<td class="product_name">' + item_name + '</td>'); //need to have same col index as of product_names th
         //save item id for future adding to table,
-        // need to have same col index as of product_ids th
+        // need to have same col index as of item_ids th
         tr.append('<td class="product_counter">0</td>');
-        tr.append('<td class="product_id" hidden="hidden">' + item_id + '</td>');
+        tr.append('<td class="item_id" hidden="hidden">' + item_id + '</td>');
         tr.append('<td class="remove"><button class="remove-item-btn">הסר</button></td>'); //remove button
         //TODO add +- buttons for adding more of same item
         tbody.append(tr);
@@ -178,6 +181,7 @@ function add_item_to_basket(data) {
             price = value['price'];
         add_item_price_to_store_basket(store_id, price, item_id);
     });
+    update_item_count(item_id, 1);
 }
 
 function is_basket_item_exists(item_id) {
@@ -185,18 +189,16 @@ function is_basket_item_exists(item_id) {
 }
 
 function get_basket_item_row(item_id) {
-    console.log(item_id + typeof item_id);
-    var p = $('.product_id');
+    // console.log(item_id + typeof item_id);
+    var p = $('.item_id');
     return p.filter(function () {
         return $(this).text() === item_id;
     }).parent();
-    // return p.filter(text_selector(p, item_id));
 }
 
 function add_item_price_to_store_basket(store_id, price, item_id) {
     var i = get_store_basket_col(store_id);
     var td = get_basket_item_row(item_id).find('td').eq(i);
-    update_item_count(item_id, 1);
     update_total_price(store_id, price);
     td.text(price); // TODO need to be done only once *except from promotions
 }
@@ -226,7 +228,7 @@ function get_basket_tbody() {
     return get_basket_table().find('tbody');
 }
 
-function init_table() {
+function init_basket() {
     //TODO check if table exists
     var table = get_basket_table();
     var thead = $('<thead>');
@@ -241,6 +243,9 @@ function init_table() {
     table.append(tbody);
     table.hide();
 }
+function clear_basket() {
+
+}
 
 function basket_stores_ids() {
     var res = [];
@@ -250,20 +255,20 @@ function basket_stores_ids() {
     return res;
 }
 
-function get_basket_store(store_id) {
-
-}
-
 function add_basket_store(store_id, name) {
-    var totals_tr = $('#basket_totals');
-    var names_tr = $('#basket_names');
+    var totals_tr = $('#basket_totals'),
+        names_tr = $('#basket_names');
+
+
     names_tr.prepend("<th>" + name + "</th>");
     totals_tr.prepend('<th><input type="text" id="total_' + store_id + '" value="0" disabled="disabled"></th>');
-    $.each($('.product_id'), function () {
+
+    $.each($('.item_id'), function () {
+        var item_id = this.innerText;
         //TODO logic for getting all items ids, count
         $.getJSON($SCRIPT_ROOT + '/_add_item',  //TODO use different function? (already have item id, and store id...
             {
-                item_id: this.innerText,
+                item_id: item_id,
                 stores_ids: [store_id]
             },
             function (response) {
@@ -275,7 +280,15 @@ function add_basket_store(store_id, name) {
                  'price':
                  }
                  */
-                add_item_to_basket(response.products);
+                var count = get_item_count(item_id),
+                    td = $('<td>').prependTo(get_basket_item_row(item_id));
+                var res = response.products[0],
+                    price = parseFloat(res['price']);
+
+                console.log(res);
+                console.log(price + ' count: ' + count);
+                update_total_price(store_id, price * count);
+                td.text(price); // TODO need to be done only once *except from promotions
             });
     });
 }
@@ -284,10 +297,13 @@ function remove_basket_store(store_id) {
     var i = get_store_basket_col(store_id) + 1;
     $('#basket th:nth-child(' + i + ')').remove();
     $('#basket td:nth-child(' + i + ')').remove();
+    if (!get_selected_stores_ids().length) {
+        clear_basket();
+    }
 }
 
 function get_item_count(item_id) {
-    return parseInt(get_basket_item_row(item_id).parent().find('.product_counter').text());
+    return parseInt(get_basket_item_row(item_id).find('.product_counter').text());
 }
 
 function get_store_basket_col(store_id) { // 0 based indexing !!
